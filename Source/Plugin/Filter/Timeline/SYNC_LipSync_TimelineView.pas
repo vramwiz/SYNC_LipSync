@@ -47,7 +47,7 @@ implementation
 uses
   Winapi.Windows, System.SysUtils, System.Types, System.Math, System.JSON,
   SYNC_LipSync_Scene, SYNC_MusicStudio_AudioWaveform, SYNC_MusicStudio_HostBackground,
-  SYNC_MusicStudio_MotionData, SYNC_MusicStudio_SingingData;
+  SYNC_MusicStudio_MotionData, SYNC_MusicStudio_SingingData, SYNC_LipSync_Presentation;
 
 
 function TLipSyncTimelineView.BeatAt(X: Integer): Double;

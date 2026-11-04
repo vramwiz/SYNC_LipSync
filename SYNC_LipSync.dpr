@@ -33,6 +33,7 @@ uses
   SYNC_MusicStudio_PreviewPlayback in 'Source\Common\Audio\SYNC_MusicStudio_PreviewPlayback.pas',
   SYNC_LipSync_TimelineView in 'Source\Plugin\Filter\Timeline\SYNC_LipSync_TimelineView.pas',
   SYNC_LipSync_ArrangementForm in 'Source\Plugin\Filter\Arrangement\SYNC_LipSync_ArrangementForm.pas',
+  SYNC_LipSync_Presentation in 'Source\Common\Motion\SYNC_LipSync_Presentation.pas',
   SYNC_MusicStudio_MotionData in 'Source\Common\Motion\SYNC_MusicStudio_MotionData.pas',
   SYNC_LipSync_ExpressionForm in 'Source\Plugin\Filter\PSD\SYNC_LipSync_ExpressionForm.pas',
   SYNC_LipSync_FilterPlugin in 'Source\Plugin\Filter\SYNC_LipSync_FilterPlugin.pas';

@@ -9,7 +9,8 @@ uses System.JSON, Vcl.Graphics;
 
 type
   TMusicStudioRhythmType = (rmtNone, rmtVerticalJump, rmtShrink,
-    rmtBounce, rmtStep, rmtPendulum, rmtPendulumTwoBeat);
+    rmtBounce, rmtStep, rmtPendulum, rmtPendulumTwoBeat,
+    rmtHorizontalSway, rmtVerticalFloat, rmtBreathing, rmtTilt);
   TMusicStudioMotionTransform = record
     OffsetX, OffsetY: Integer;
     Scale, VerticalScale, AngleDegrees, TopOffsetX: Double;
@@ -54,12 +55,14 @@ type
 
 function MusicStudioRhythmKey(Value: TMusicStudioRhythmType): string;
 const Keys: array[TMusicStudioRhythmType] of string =
-  ('none','verticalJump','shrink','bounce','step','pendulum','pendulumTwoBeat');
+  ('none','verticalJump','shrink','bounce','step','pendulum','pendulumTwoBeat',
+   'horizontalSway','verticalFloat','breathing','tilt');
 begin Result := Keys[Value]; end;
 
 function MusicStudioRhythmCaption(Value: TMusicStudioRhythmType): string;
 const Captions: array[TMusicStudioRhythmType] of string =
-  ('なし','縦ジャンプ','縮小','バウンス','ステップ','振り子（1拍）','振り子（2拍）');
+  ('なし','縦ジャンプ','縮小','バウンス','ステップ','振り子（1拍）','振り子（2拍）',
+   '横ゆれ','上下ゆれ','呼吸（緩やかな拡縮）','左右に傾く');
 begin Result := Captions[Value]; end;
 
 function RhythmFromKey(const Key: string): TMusicStudioRhythmType;
@@ -224,6 +227,18 @@ begin
   if IsNan(BeatPosition) or IsInfinite(BeatPosition) or IsNan(Speed) or
     IsInfinite(Speed) or IsNan(Strength) or IsInfinite(Strength) then Exit;
   if (MotionType = rmtNone) or SameValue(Strength,0) or (Speed <= 0) then Exit;
+  // 区間先頭の拍を原点に評価し、シーク時にも同じ姿勢を再現する。
+  if MotionType in [rmtHorizontalSway,rmtVerticalFloat,rmtBreathing,rmtTilt] then
+  begin
+    Swing := Sin(Pi*BeatPosition*Speed);
+    case MotionType of
+      rmtHorizontalSway: Transform.OffsetX := Round(Strength*0.5*Swing);
+      rmtVerticalFloat: Transform.OffsetY := -Round(Strength*0.4*Sqr(Swing));
+      rmtBreathing: Transform.Scale := EnsureRange(1-Abs(Strength)*Sqr(Sin(Pi*BeatPosition*Speed/2))/500,0.5,1.0);
+      rmtTilt: Transform.AngleDegrees := Strength*Swing/4;
+    end;
+    Exit;
+  end;
   if MotionType = rmtBounce then begin
     Progress := BeatPosition*Speed/2.0; Curve := Sqr(Sin(Progress*Pi));
     Transform.OffsetY := -Round(Strength*0.25*Curve);
@@ -263,7 +278,7 @@ begin
     Config.Speed,Config.Strength,Transform,Config.Param1,Config.Param2);
   Inc(Transform.OffsetX,Round(Config.OffsetX)); Inc(Transform.OffsetY,Round(Config.OffsetY));
   Transform.Scale := Transform.Scale*Config.ScalePercent/100.0;
-  Transform.AngleDegrees := Config.RotationDegrees;
+  Transform.AngleDegrees := Transform.AngleDegrees+Config.RotationDegrees;
 end;
 
 function PendulumWeight(HeightRatio, WaistRatio, Flexibility: Double): Double;

@@ -17,7 +17,7 @@ uses
   System.SysUtils, System.Math, System.Types, System.SyncObjs, System.UITypes,
   Vcl.Dialogs, Vcl.Graphics,
   PluginFilterTable, SYNC_LipSync_ArrangementForm, SYNC_LipSync_Scene,
-  SYNC_LipSync_Project,
+  SYNC_LipSync_Project, SYNC_LipSync_Presentation,
   SYNC_MusicStudio_HostBackground;
 
 const
@@ -56,6 +56,7 @@ var
   SettingsButton: TFILTER_ITEM_BUTTON;
   PSDItem, MusicItem: TFILTER_ITEM_FILE;
   JSONDataItem: TFILTER_ITEM_STRING;
+  VideoOffsetItem: TFILTER_ITEM_TRACK;
   PluginTableInitialized: Boolean;
   HostVersion: Cardinal;
 
@@ -253,7 +254,9 @@ var
   InputAvailable, Rendered, IsArrangement: Boolean;
   JSON: string;
   Character: TLipSyncCharacter;
-  Opacity: Byte;
+  Presentation: TLipSyncPresentationFrame;
+  Frame, Bounds: TRect;
+  RenderSeconds: Double;
 
   procedure Composite(const Bounds: TRect; SourceOpacity: Byte);
   var
@@ -316,6 +319,10 @@ begin
   end;
   CaptureBackground(Video, Pixels, Width, Height);
 
+  // 正のオフセットは描画を遅らせる。開始前はホスト画像を維持する。
+  RenderSeconds := Video^.Object_^.Time-VideoOffsetItem.Value;
+  if RenderSeconds<0 then Exit;
+
   JSON := string(JSONDataItem.Value);
   if JSON <> ArrangementJSON then
   begin
@@ -325,17 +332,21 @@ begin
     ArrangementJSON := JSON;
   end;
   Rendered := False;
+  Frame := Rect(0,0,Width,Height);
   if Assigned(Arrangement) then
   begin
     for I := Arrangement.Characters.Count - 1 downto 0 do
     begin
       Character := Arrangement.Characters[I];
-      Opacity := Character.OpacityAt(Arrangement.Timing,Video^.Object_^.Time);
-      if Opacity = 0 then Continue;
+      Presentation := Character.PresentationAt(Arrangement.Timing,RenderSeconds);
+      if Presentation.Opacity = 0 then Continue;
       if (Character.Clips.Count = 0) and Assigned(Arrangement.Audio) and
         not Arrangement.Audio.Done then Arrangement.Audio.WaitFor;
-      if Character.Render(Image, Arrangement.Timing, Arrangement.Audio, Video^.Object_^.Time) then
-        Composite(Character.Scene.Placement(Rect(0, 0, Width, Height), Width, Height),Opacity);
+      if Character.Render(Image,Arrangement.Timing,Arrangement.Audio,RenderSeconds) then
+      begin
+        Bounds := Character.Scene.Placement(Frame,Width,Height);
+        Composite(Presentation.AdjustBounds(Frame,Bounds),Presentation.Opacity);
+      end;
     end;
   end
   else
@@ -343,8 +354,8 @@ begin
     Scene.Configure(string(PSDItem.Value), string(MusicItem.Value), JSON);
     if not Scene.Document.Loaded then Exit;
     Scene.WaitForMusic;
-    if Scene.Render(Image, Video^.Object_^.Time) then
-      Composite(Scene.Placement(Rect(0, 0, Width, Height), Width, Height),255);
+    if Scene.Render(Image,RenderSeconds) then
+      Composite(Scene.Placement(Frame,Width,Height),255);
   end;
   if Rendered then Video^.SetImageData(@Pixels[0], Width, Height);
 end;
@@ -396,6 +407,7 @@ begin
     AddFile(MusicItem, MUSIC_ITEM_NAME, '', LIP_SYNC_MUSIC_CAPTION + #0 + LIP_SYNC_MUSIC_MASK + #0#0);
     AddFile(PSDItem, PSD_ITEM_NAME, '', LIP_SYNC_PSD_CAPTION + #0 + LIP_SYNC_PSD_MASK + #0#0);
     AddString(JSONDataItem, JSON_ITEM_NAME, DEFAULT_JSON);
+    AddTrack(VideoOffsetItem,'オフセット',0,-1,1,0.01);
     GetPluginTable^.Func_Create := LipSyncCreate;
     GetPluginTable^.Func_Destroy := LipSyncDestroy;
     PluginTableInitialized := True;

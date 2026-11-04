@@ -116,7 +116,7 @@ uses
   System.Generics.Collections, Vcl.Dialogs,
   SYNC_LipSync_Scene, SYNC_MusicStudio_BeatData,
   SYNC_MusicStudio_DarkTheme, AviUtl2FilterTypes,
-  SYNC_LipSync_ExpressionForm;
+  SYNC_LipSync_ExpressionForm, SYNC_LipSync_Presentation;
 
 const
   ROW_HEIGHT = 70;
@@ -197,6 +197,7 @@ var
   LabelText: TLabel;
   Motion: TMusicStudioRhythmType;
   MotionItem, Entrance, ExitMenu, CueItem: TMenuItem;
+  Cue: TLipSyncPresentation;
   procedure Tool(Parent: TPanel; const Text: string; X, W, Tag: Integer);
   begin
     Button := TButton.Create(Self);
@@ -312,19 +313,19 @@ begin
   Entrance := TMenuItem.Create(FPresentationMenu);
   Entrance.Caption := '登場演出';
   FPresentationMenu.Items.Add(Entrance);
-  CueItem := TMenuItem.Create(FPresentationMenu);
-  CueItem.Caption := 'フェードイン';
-  CueItem.Tag := Ord(lpFadeIn);
-  CueItem.OnClick := PresentationPicked;
-  Entrance.Add(CueItem);
   ExitMenu := TMenuItem.Create(FPresentationMenu);
   ExitMenu.Caption := '退場演出';
   FPresentationMenu.Items.Add(ExitMenu);
-  CueItem := TMenuItem.Create(FPresentationMenu);
-  CueItem.Caption := 'フェードアウト';
-  CueItem.Tag := Ord(lpFadeOut);
-  CueItem.OnClick := PresentationPicked;
-  ExitMenu.Add(CueItem);
+  for Cue := Succ(lpNone) to High(Cue) do
+  begin
+    CueItem := TMenuItem.Create(FPresentationMenu);
+    CueItem.Caption := LipSyncPresentationCaption(Cue);
+    CueItem.Tag := Ord(Cue);
+    CueItem.RadioItem := True;
+    CueItem.OnClick := PresentationPicked;
+    if LipSyncPresentationIsEntrance(Cue) then Entrance.Add(CueItem)
+    else ExitMenu.Add(CueItem);
+  end;
 
   FTimer := TTimer.Create(Self);
   FTimer.Enabled := False;
@@ -621,7 +622,7 @@ var
   Character: TLipSyncCharacter;
   Blend: TBlendFunction;
   I, Save: Integer;
-  Opacity: Byte;
+  Presentation: TLipSyncPresentationFrame;
 begin
   if (FProject = nil) or (FStage.Width <= 0) or (FStage.Height <= 0) then Exit;
   FStageBuffer.SetSize(FStage.Width,FStage.Height);
@@ -648,9 +649,11 @@ begin
       else
         Bounds := Character.Scene.Placement(Frame,FWidth,FHeight);
       if I = FSelected then FSelectedBounds := Bounds;
-      Opacity := Character.OpacityAt(FProject.Timing,FCursor);
-      if (Opacity = 0) or not Character.Render(FImage,FProject.Timing,FProject.Audio,FCursor) then Continue;
-      Blend.SourceConstantAlpha := Opacity;
+      Presentation := Character.PresentationAt(FProject.Timing,FCursor);
+      if (Presentation.Opacity = 0) or
+        not Character.Render(FImage,FProject.Timing,FProject.Audio,FCursor) then Continue;
+      Bounds := Presentation.AdjustBounds(Frame,Bounds);
+      Blend.SourceConstantAlpha := Presentation.Opacity;
       Winapi.Windows.AlphaBlend(C.Handle,Bounds.Left,Bounds.Top,Bounds.Width,Bounds.Height,
         FImage.Canvas.Handle,0,0,FImage.Width,FImage.Height,Blend);
     end;
@@ -723,7 +726,7 @@ var
   Lane: TLipSyncEffectLane;
   Grip: TLipSyncRangeGrip;
   OnEffectLane: Boolean;
-  Item: TMenuItem;
+  Branch, Item: TMenuItem;
 begin
   if not (Button in [mbLeft,mbRight]) then Exit;
   ActiveControl := nil;
@@ -778,8 +781,8 @@ begin
       end
       else
       begin
-        FPresentationMenu.Items[0][0].Checked := FEffect.Presentation = lpFadeIn;
-        FPresentationMenu.Items[1][0].Checked := FEffect.Presentation = lpFadeOut;
+        for Branch in FPresentationMenu.Items do
+          for Item in Branch do Item.Checked := Item.Tag = Ord(FEffect.Presentation);
         P := FTimeline.ClientToScreen(Point(X,Y));
         FPresentationMenu.Popup(P.X,P.Y);
       end;

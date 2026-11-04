@@ -7,11 +7,11 @@ interface
 uses
   System.JSON, System.Generics.Collections, Vcl.Graphics,
   SYNC_LipSync_Scene, SYNC_MusicStudio_BeatData, SYNC_MusicStudio_SingingData,
-  SYNC_MusicStudio_AudioWaveform, SYNC_MusicStudio_PsdTransform, SYNC_MusicStudio_MotionData;
+  SYNC_MusicStudio_AudioWaveform, SYNC_MusicStudio_PsdTransform, SYNC_MusicStudio_MotionData,
+  SYNC_LipSync_Presentation;
 
 type
   TLipSyncEffectLane = (elExpression, elMotion, elPresentation);
-  TLipSyncPresentation = (lpNone, lpFadeIn, lpFadeOut);
 
   TLipSyncEffect = class
   public
@@ -61,9 +61,9 @@ type
     // 重複時は開始が後の歌唱を選ぶ。戻り値は借用で、Localは素材内の秒位置。
     function ActiveClip(const Timing: TMusicStudioTempoMap; Seconds: Double;
       out Local: Double): TLipSyncClip;
-    // 指定時刻の合成用アルファを0～255で返す。再生順序や過去のフレームに依存しない。
-    function OpacityAt(const Timing: TMusicStudioTempoMap; Seconds: Double): Byte;
-    // 呼出側のBitmapへ口差分・表情・変形を描く。フェードはOpacityAtで合成側が適用する。
+    // 指定時刻の合成用演出を返す。再生順序や過去のフレームに依存しない。
+    function PresentationAt(const Timing: TMusicStudioTempoMap; Seconds: Double): TLipSyncPresentationFrame;
+    // 呼出側のBitmapへ口差分・表情・変形を描く。登退場は合成側で適用する。
     function Render(Image: TBitmap; const Timing: TMusicStudioTempoMap;
       Audio: TMusicStudioWaveJob; Seconds: Double): Boolean;
   end;
@@ -90,21 +90,11 @@ type
   end;
 
 function HasLipSyncArrangement(const JSON: string): Boolean;
-function LipSyncPresentationCaption(Value: TLipSyncPresentation): string;
 
 implementation
 
 uses
   System.SysUtils, System.Math, System.Types, SYNC_MusicStudio_PsdLayerConfig;
-
-const
-  PRESENTATION_KEYS: array[TLipSyncPresentation] of string = ('none','fadeIn','fadeOut');
-
-function LipSyncPresentationCaption(Value: TLipSyncPresentation): string;
-const Captions: array[TLipSyncPresentation] of string = ('演出（未設定）','フェードイン','フェードアウト');
-begin
-  Result := Captions[Value];
-end;
 
 constructor TLipSyncEffect.Create(ALane: TLipSyncEffectLane; FirstBeat, LastBeat: Double);
 begin
@@ -293,7 +283,8 @@ begin
   end;
 end;
 
-function TLipSyncCharacter.OpacityAt(const Timing: TMusicStudioTempoMap; Seconds: Double): Byte;
+function TLipSyncCharacter.PresentationAt(const Timing: TMusicStudioTempoMap;
+  Seconds: Double): TLipSyncPresentationFrame;
 var
   Effect, First, Previous: TLipSyncEffect;
   StartTime, EndTime, Progress: Double;
@@ -312,16 +303,20 @@ begin
   // 最初の登場より前と、退場完了から次の登場までは非表示。
   if Previous = nil then
   begin
-    if Assigned(First) and (First.Presentation = lpFadeIn) then Exit(0);
-    Exit(255);
+    Result := LipSyncPresentationFrame(lpNone,0);
+    if Assigned(First) and LipSyncPresentationIsEntrance(First.Presentation) then Result.Opacity := 0;
+    Exit;
   end;
   StartTime := Timing.BeatToSeconds(Previous.StartBeat);
   EndTime := Timing.BeatToSeconds(Previous.EndBeat);
-  Progress := 1;
-  if (Seconds < EndTime) and (EndTime > StartTime) then
-    Progress := EnsureRange((Seconds-StartTime)/(EndTime-StartTime),0.0,1.0);
-  if Previous.Presentation = lpFadeOut then Progress := 1-Progress;
-  Result := Round(255*Progress);
+  if (Seconds>=EndTime) or (EndTime<=StartTime) then
+  begin
+    Result := LipSyncPresentationFrame(lpNone,0);
+    if not LipSyncPresentationIsEntrance(Previous.Presentation) then Result.Opacity := 0;
+    Exit;
+  end;
+  Progress := (Seconds-StartTime)/(EndTime-StartTime);
+  Result := LipSyncPresentationFrame(Previous.Presentation,Progress);
 end;
 
 function TLipSyncCharacter.Render(Image: TBitmap; const Timing: TMusicStudioTempoMap;
@@ -365,7 +360,8 @@ begin
   begin
     CalculateMusicStudioRhythmTransform(Effect.Motion,Beat-Effect.StartBeat,1,24,Motion);
     if (Motion.OffsetX = 0) and (Motion.OffsetY = 0) and (Motion.Scale = 1) and
-      (Motion.VerticalScale = 1) and (Motion.TopOffsetX = 0) then Exit;
+      (Motion.VerticalScale = 1) and (Motion.TopOffsetX = 0) and
+      (Motion.AngleDegrees = 0) then Exit;
     if MotionImage = nil then MotionImage := TBitmap.Create;
     RenderMusicStudioMotion(Image,MotionImage,Motion);
     Image.Assign(MotionImage);
@@ -448,7 +444,7 @@ begin
               if MusicStudioRhythmKey(Motion) = EffectObj.GetValue<string>('motion','') then
                 Effect.Motion := Motion;
             for Presentation := Low(Presentation) to High(Presentation) do
-              if PRESENTATION_KEYS[Presentation] = EffectObj.GetValue<string>('cue','') then
+              if LipSyncPresentationKey(Presentation) = EffectObj.GetValue<string>('cue','') then
                 Effect.Presentation := Presentation;
           end;
     end;
@@ -538,7 +534,7 @@ begin
       if Effect.Lane = elPresentation then
       begin
         EffectObj.AddPair('lane','presentation');
-        EffectObj.AddPair('cue',PRESENTATION_KEYS[Effect.Presentation]);
+        EffectObj.AddPair('cue',LipSyncPresentationKey(Effect.Presentation));
       end
       else if Effect.Lane = elMotion then
       begin

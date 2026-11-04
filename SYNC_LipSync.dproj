@@ -118,6 +118,7 @@
         <DCCReference Include="Source\Common\Audio\SYNC_MusicStudio_PreviewPlayback.pas"/>
         <DCCReference Include="Source\Plugin\Filter\Timeline\SYNC_LipSync_TimelineView.pas"/>
         <DCCReference Include="Source\Plugin\Filter\Arrangement\SYNC_LipSync_ArrangementForm.pas"/>
+        <DCCReference Include="Source\Common\Motion\SYNC_LipSync_Presentation.pas"/>
         <DCCReference Include="Source\Common\Motion\SYNC_MusicStudio_MotionData.pas"/>
         <DCCReference Include="Source\Plugin\Filter\PSD\SYNC_LipSync_ExpressionForm.pas"/>
         <BuildConfiguration Include="Base">
