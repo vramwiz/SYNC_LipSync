@@ -121,6 +121,8 @@
         <DCCReference Include="Source\Common\Motion\SYNC_LipSync_Presentation.pas"/>
         <DCCReference Include="Source\Common\Motion\SYNC_MusicStudio_MotionData.pas"/>
         <DCCReference Include="Source\Plugin\Filter\PSD\SYNC_LipSync_ExpressionForm.pas"/>
+        <DCCReference Include="Source\Common\Project\SYNC_LipSync_EditHistory.pas"/>
+        <DCCReference Include="Source\Plugin\Filter\Timeline\SYNC_LipSync_TempoEditor.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

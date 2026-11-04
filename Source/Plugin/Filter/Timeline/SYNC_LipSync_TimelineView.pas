@@ -5,11 +5,12 @@
 interface
 
 uses
-  Vcl.Graphics, SYNC_LipSync_Project;
+  System.Types, Vcl.Graphics, SYNC_LipSync_Project, SYNC_MusicStudio_BeatData;
 
 const
   HEADER_WIDTH = 192;
   RULER_HEIGHT = 28;
+  TEMPO_TOP = 14;
 
 type
   // 0行目は固定音源。TopRowは先頭に表示するキャラクターの0始まりインデックス。
@@ -23,11 +24,16 @@ type
     function EffectHeight: Integer;
     function CharacterHeight: Integer;
     function EffectY(Row: Integer; Lane: TLipSyncEffectLane): Integer;
+    // 拍子とズームで決まる同じグリッドを、描画と入力の吸着に使う。
+    function GridStep(Timing: TMusicStudioTempoMap; Beat: Double): Double;
+    function SnapBeat(Timing: TMusicStudioTempoMap; Beat: Double): Double;
+    function TempoRect(Timing: TMusicStudioTempoMap; Index,Width: Integer): TRect;
+    function TempoHit(Timing: TMusicStudioTempoMap; X,Y,Width: Integer): Integer;
   end;
 
   // ポインターはフォームから描画中だけ借用する。ドラッグ候補は未保存の表示用データ。
   TLipSyncTimelinePaintState = record
-    Selected: Integer;
+    Selected, SelectedTempo: Integer;
     Clip: TLipSyncClip;
     Effect: TLipSyncEffect;
     CursorSeconds: Double;
@@ -45,7 +51,7 @@ procedure PaintLipSyncTimeline(C: TCanvas; W,H: Integer; AFont: TFont;
 implementation
 
 uses
-  Winapi.Windows, System.SysUtils, System.Types, System.Math, System.JSON,
+  Winapi.Windows, System.SysUtils, System.Math, System.JSON,
   SYNC_LipSync_Scene, SYNC_MusicStudio_AudioWaveform, SYNC_MusicStudio_HostBackground,
   SYNC_MusicStudio_MotionData, SYNC_MusicStudio_SingingData, SYNC_LipSync_Presentation;
 
@@ -88,6 +94,67 @@ end;
 function TLipSyncTimelineView.EffectY(Row: Integer; Lane: TLipSyncEffectLane): Integer;
 begin
   Result := RowY(Row)+RowHeight+Ord(Lane)*EffectHeight;
+end;
+
+function TLipSyncTimelineView.GridStep(Timing: TMusicStudioTempoMap; Beat: Double): Double;
+begin
+  Result := Min(MusicStudioSnapStep(PixelsPerBeat),4/Timing.DenominatorAtBeat(Beat));
+end;
+
+function TLipSyncTimelineView.SnapBeat(Timing: TMusicStudioTempoMap; Beat: Double): Double;
+var
+  Measure: Integer;
+  Start, Step: Double;
+begin
+  Beat := EnsureRange(Beat,0.0,1000000.0);
+  Measure := Timing.MeasureAtBeat(Beat);
+  Start := Timing.MeasureStart(Measure);
+  Step := GridStep(Timing,Beat);
+  Result := Min(Min(1000000.0,Timing.MeasureStart(Measure+1)),
+    Start+MusicStudioSnapBeat(Beat-Start,Step));
+end;
+
+function TLipSyncTimelineView.TempoRect(Timing: TMusicStudioTempoMap; Index,Width: Integer): TRect;
+var X, RightEdge: Integer;
+begin
+  X := XAt(Timing.TempoPoint(Index).Beat);
+  if X<HEADER_WIDTH then Exit(TRect.Empty);
+  RightEdge := Min(Width,X+88);
+  if Index+1<Timing.PointCount then
+    RightEdge := Min(RightEdge,XAt(Timing.TempoPoint(Index+1).Beat));
+  Result := Rect(X,TEMPO_TOP,RightEdge,RULER_HEIGHT);
+end;
+
+function TLipSyncTimelineView.TempoHit(Timing: TMusicStudioTempoMap; X,Y,Width: Integer): Integer;
+var I: Integer;
+begin
+  Result := -1;
+  if (Y<TEMPO_TOP) or (Y>=RULER_HEIGHT) or (X<HEADER_WIDTH) then Exit;
+  for I := Timing.PointCount-1 downto 0 do
+    if TempoRect(Timing,I,Width).Contains(Point(X,Y)) then Exit(I);
+end;
+
+procedure PaintTempoMarkers(Canvas: TCanvas; Width,Height: Integer; Timing: TMusicStudioTempoMap;
+  const View: TLipSyncTimelineView; Selected: Integer);
+var
+  I: Integer;
+  R: TRect;
+begin
+  for I := 0 to Timing.PointCount-1 do
+  begin
+    R := View.TempoRect(Timing,I,Width);
+    if R.IsEmpty then Continue;
+    Canvas.Pen.Color := $006078A0;
+    if I=Selected then Canvas.Pen.Color := $0084BFF0;
+    Canvas.Pen.Style := psDot;
+    Canvas.MoveTo(R.Left,R.Bottom);
+    Canvas.LineTo(R.Left,Height);
+    Canvas.Pen.Style := psSolid;
+    Canvas.Brush.Color := $00604424;
+    if I=Selected then Canvas.Brush.Color := $00825730;
+    Canvas.FillRect(R);
+    Canvas.TextRect(R,R.Left+3,R.Top-1,FormatFloat('0.##',Timing.TempoPoint(I).BPM)+' BPM');
+  end;
 end;
 
 procedure PaintEffects(Canvas: TCanvas; Width,Height: Integer; Project: TLipSyncProject;
@@ -148,7 +215,7 @@ procedure PaintLipSyncTimeline(C: TCanvas; W,H: Integer; AFont: TFont;
 var
   Row, Y, X, A, B, I, J, LowY, HighY, Save, Measure: Integer;
   Lane: TLipSyncEffectLane;
-  Beat, Start, Duration, MinValue, MaxValue: Double;
+  Beat, Start, Duration, MinValue, MaxValue, Grid, Pulse, WithinBeat: Double;
   R, Thumb, Body: TRect;
   Character: TLipSyncCharacter;
   Clip: TLipSyncClip;
@@ -226,21 +293,31 @@ begin
       X := View.XAt(Beat);
       C.Pen.Color := $005A5A5A;
       C.MoveTo(X, 0); C.LineTo(X, H);
-      C.TextOut(X + 4, 5, IntToStr(Measure));
-      Start := Beat + 4 / Project.Timing.DenominatorAtBeat(Beat);
-      while (Start < Beat + Project.Timing.MeasureLengthAtBeat(Beat) - 1E-8) and
-        (View.XAt(Start) < W) do
+      C.TextOut(X+4,0,IntToStr(Measure));
+      Grid := View.GridStep(Project.Timing,Beat);
+      Pulse := 4/Project.Timing.DenominatorAtBeat(Beat);
+      Start := Beat+Grid;
+      while (Start < Beat+Project.Timing.MeasureLengthAtBeat(Beat)-1E-8) and
+        (View.XAt(Start)<W) do
       begin
         X := View.XAt(Start);
-        C.Pen.Color := $00383838;
-        C.MoveTo(X, RULER_HEIGHT); C.LineTo(X, H);
-        C.TextOut(X + 3, 5, '·');
-        Start := Start + 4 / Project.Timing.DenominatorAtBeat(Beat);
+        WithinBeat := (Start-Beat)/Pulse;
+        if Abs(WithinBeat-Round(WithinBeat))<1E-8 then
+        begin
+          C.Pen.Color := $00484848;
+          if View.PixelsPerBeat*Pulse>=12 then C.TextOut(X+3,0,'·');
+        end
+        else
+          C.Pen.Color := $00323232;
+        C.MoveTo(X,RULER_HEIGHT);
+        C.LineTo(X,H);
+        Start := Start+Grid;
       end;
       Inc(Measure);
       Beat := Project.Timing.MeasureStart(Measure);
     end;
     C.Brush.Style := bsSolid;
+    PaintTempoMarkers(C,W,H,Project.Timing,View,State.SelectedTempo);
     Audio := Project.Audio;
     if Assigned(Audio) and Audio.Done and (Length(Audio.Waveform) > 0) then
     begin

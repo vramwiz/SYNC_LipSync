@@ -32,6 +32,8 @@ uses
   SYNC_MusicStudio_MeterMap in 'Source\Common\Timing\SYNC_MusicStudio_MeterMap.pas',
   SYNC_MusicStudio_PreviewPlayback in 'Source\Common\Audio\SYNC_MusicStudio_PreviewPlayback.pas',
   SYNC_LipSync_TimelineView in 'Source\Plugin\Filter\Timeline\SYNC_LipSync_TimelineView.pas',
+  SYNC_LipSync_EditHistory in 'Source\Common\Project\SYNC_LipSync_EditHistory.pas',
+  SYNC_LipSync_TempoEditor in 'Source\Plugin\Filter\Timeline\SYNC_LipSync_TempoEditor.pas',
   SYNC_LipSync_ArrangementForm in 'Source\Plugin\Filter\Arrangement\SYNC_LipSync_ArrangementForm.pas',
   SYNC_LipSync_Presentation in 'Source\Common\Motion\SYNC_LipSync_Presentation.pas',
   SYNC_MusicStudio_MotionData in 'Source\Common\Motion\SYNC_MusicStudio_MotionData.pas',
