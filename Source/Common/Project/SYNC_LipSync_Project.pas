@@ -25,13 +25,19 @@ type
   end;
 
   TLipSyncClip = class
+  private
+    procedure LoadSource(const FilePath: string; RequireReadable: Boolean);
   public
     Path: string;
-    Beat: Double;
+    Beat, DurationSeconds: Double;
+    Missing: Boolean;
     Source: TMusicStudioSingingSource;
     Track: Integer;
     constructor Create; overload;
-    constructor Create(const FilePath: string; StartBeat: Double; RequireReadable: Boolean); overload;
+    constructor Create(const FilePath: string; StartBeat: Double; RequireReadable: Boolean;
+      StoredDuration: Double = 0); overload;
+    // 新しい歌唱データを検証してから置き換える。配置と既知の長さは保持する。
+    procedure ReplaceSource(const FilePath: string);
     // 呼出側所有のクリップを返す。読込済み音符は共有し、参照ファイルは読み直さない。
     function Duplicate(StartBeat: Double): TLipSyncClip;
   end;
@@ -39,6 +45,7 @@ type
   TLipSyncCharacter = class
   public
     PSDPath, Settings: string;
+    PsdMissing: Boolean;
     // ここで所有する。リストから削除したクリップ・区間の参照は使えなくなる。
     Scene: TLipSyncScene;
     Clips: TObjectList<TLipSyncClip>;
@@ -50,6 +57,8 @@ type
     destructor Destroy; override;
     // 素材参照とPSD設定を更新し、次回の表示に備えて縮小画像を破棄する。
     procedure UpdateSettings(const Path, JSON: string);
+    // 読込が成功したときだけPSDを差し替え、同じキーの差分と配置を引き継ぐ。
+    procedure ReplacePSD(const Path: string);
     // 初回だけ生成する。Thumbnailはキャラクターが所有し、設定更新まで有効。
     procedure EnsureThumbnail;
     // 保存候補の配置だけを変更する。口差分の設定と縮小画像は保持する。
@@ -71,8 +80,11 @@ type
   TLipSyncProject = class
   private
     FRoot: TJSONObject;
+    FRelinkRevision: string;
     FAudioPath: string;
+    FAudioMissing: Boolean;
     FAudio: TMusicStudioWaveJob;
+    function GetAudio: TMusicStudioWaveJob;
   public
     Timing: TMusicStudioTempoMap;
     Characters: TObjectList<TLipSyncCharacter>;
@@ -83,10 +95,15 @@ type
     procedure SetAudio(const Path: string);
     function EndBeat(Clip: TLipSyncClip): Double;
     function ContentEndBeat: Double;
+    // 編集画面の定期確認用。欠損を検出しても参照パスや素材設定は変更しない。
+    function CheckMissingAssets: Boolean;
+    // 同一パスへの差し替えもホストの描画キャッシュへ通知する。
+    procedure MarkRelink;
     // 元のJSONのうち統合編集部を置き換え、素材参照と設定の文字列を返す。
     function SaveJSON: string;
     property AudioPath: string read FAudioPath;
-    property Audio: TMusicStudioWaveJob read FAudio;
+    property AudioMissing: Boolean read FAudioMissing;
+    property Audio: TMusicStudioWaveJob read GetAudio;
   end;
 
 function HasLipSyncArrangement(const JSON: string): Boolean;
@@ -131,17 +148,35 @@ begin
   inherited Create;
 end;
 
-constructor TLipSyncClip.Create(const FilePath: string; StartBeat: Double; RequireReadable: Boolean);
+constructor TLipSyncClip.Create(const FilePath: string; StartBeat: Double; RequireReadable: Boolean;
+  StoredDuration: Double);
 begin
   inherited Create;
-  Path := FilePath;
   Beat := StartBeat;
   if IsNan(Beat) or IsInfinite(Beat) or (Beat < 0) or (Beat > 1000000) then
     raise EArgumentException.Create('クリップの拍位置が不正です。');
-  Source := LoadMusicStudioSinging(Path);
-  if RequireReadable and not (Source.Status in [ssReady, ssNoLyrics]) then
-    raise EArgumentException.Create(Source.Message);
+  if not IsNan(StoredDuration) and not IsInfinite(StoredDuration) and
+    (StoredDuration>0) and (StoredDuration<=MUSICSTUDIO_MAX_MEDIA_SECONDS) then
+    DurationSeconds := StoredDuration;
+  LoadSource(FilePath,RequireReadable);
+end;
+
+procedure TLipSyncClip.LoadSource(const FilePath: string; RequireReadable: Boolean);
+var Candidate: TMusicStudioSingingSource;
+begin
+  Candidate := LoadMusicStudioSinging(FilePath);
+  if RequireReadable and not (Candidate.Status in [ssReady,ssNoLyrics]) then
+    raise EArgumentException.Create(Candidate.Message);
+  Path := FilePath;
+  Source := Candidate;
+  Missing := Candidate.Status=ssMissing;
+  if DurationSeconds<=0 then DurationSeconds := Source.Duration;
   Track := LipSyncSingingTrack(Source);
+end;
+
+procedure TLipSyncClip.ReplaceSource(const FilePath: string);
+begin
+  LoadSource(FilePath,True);
 end;
 
 function TLipSyncClip.Duplicate(StartBeat: Double): TLipSyncClip;
@@ -149,6 +184,8 @@ begin
   Result := TLipSyncClip.Create;
   Result.Path := Path;
   Result.Beat := StartBeat;
+  Result.DurationSeconds := DurationSeconds;
+  Result.Missing := Missing;
   Result.Source := Source;
   Result.Track := Track;
 end;
@@ -178,6 +215,7 @@ var
 begin
   Scene.Configure(Path, '', JSON);
   PSDPath := Path;
+  PsdMissing := (Path<>'') and not FileExists(Path);
   Settings := JSON;
   FreeAndNil(Thumbnail);
   Config := TJSONObject.ParseJSONValue(JSON) as TJSONObject;
@@ -186,6 +224,25 @@ begin
     if Config <> nil then Threshold := LipSyncNumber(Config, 'threshold', 8, 0, 99) / 100;
   finally
     Config.Free;
+  end;
+end;
+
+procedure TLipSyncCharacter.ReplacePSD(const Path: string);
+var Candidate: TLipSyncScene;
+begin
+  Candidate := TLipSyncScene.Create;
+  try
+    Candidate.Configure(Path,'',Settings);
+    if not Candidate.Document.Loaded then
+      raise EArgumentException.Create(Candidate.Document.LastError);
+    Scene.Free;
+    Scene := Candidate;
+    Candidate := nil;
+    PSDPath := Path;
+    PsdMissing := False;
+    FreeAndNil(Thumbnail);
+  finally
+    Candidate.Free;
   end;
 end;
 
@@ -274,7 +331,7 @@ begin
   for Clip in Clips do
   begin
     Start := Timing.BeatToSeconds(Clip.Beat);
-    if (Seconds >= Start) and (Seconds < Start + Clip.Source.Duration) and
+    if (Seconds >= Start) and (Seconds < Start + Clip.DurationSeconds) and
       ((Result = nil) or (Clip.Beat >= Result.Beat)) then
     begin
       Result := Clip;
@@ -329,11 +386,14 @@ var
   Visibility: TJSONObject;
   Motion: TMusicStudioMotionTransform;
 begin
+  if PsdMissing then Exit(False);
   Slot := 0;
   Step := 3;
   Clip := ActiveClip(Timing, Seconds, Local);
   if Clip <> nil then
-    LipSyncSingingMouth(Clip.Source.Notes, Clip.Track, Local, Slot, Step)
+  begin
+    if not Clip.Missing then LipSyncSingingMouth(Clip.Source.Notes,Clip.Track,Local,Slot,Step);
+  end
   else if (Clips.Count = 0) and Assigned(Audio) and Audio.Done and
     (Seconds >= 0) and (Seconds < Audio.Info.Duration) then
   begin
@@ -404,6 +464,7 @@ begin
   end;
 
   Arrangement := TJSONObject(Value);
+  FRelinkRevision := Arrangement.GetValue<string>('relinkRevision','');
   SetAudio(Arrangement.GetValue<string>('audio', ''));
   Value := Arrangement.GetValue('timing');
   if Value is TJSONObject then Timing.LoadJSON(TJSONObject(Value));
@@ -422,7 +483,7 @@ begin
           begin
             ClipObj := TJSONObject(ClipValue);
             Character.Clips.Add(TLipSyncClip.Create(ClipObj.GetValue<string>('path', ''),
-              ClipObj.GetValue<Double>('beat', 0), False));
+              ClipObj.GetValue<Double>('beat',0),False,ClipObj.GetValue<Double>('duration',0)));
           end;
       if TrackObj.GetValue('effects') is TJSONArray then
         for EffectValue in TJSONArray(TrackObj.GetValue('effects')) do
@@ -459,14 +520,21 @@ begin
   inherited;
 end;
 
+function TLipSyncProject.GetAudio: TMusicStudioWaveJob;
+begin
+  if FAudioMissing then Exit(nil);
+  Result := FAudio;
+end;
+
 procedure TLipSyncProject.SetAudio(const Path: string);
 begin
-  if Path = FAudioPath then Exit;
+  if (Path = FAudioPath) and not FAudioMissing then Exit;
   if (Path <> '') and (LipSyncMode(Path) <> lmEnvelope) then
     raise EArgumentException.Create('基準音源には WAV または MP3 を指定してください。');
   FreeAndNil(FAudio);
   FAudioPath := Path;
-  if Path <> '' then
+  FAudioMissing := (Path<>'') and not FileExists(Path);
+  if (Path<>'') and not FAudioMissing then
   begin
     FAudio := TMusicStudioWaveJob.Create(Path, 0);
     FAudio.Start;
@@ -476,7 +544,7 @@ end;
 function TLipSyncProject.EndBeat(Clip: TLipSyncClip): Double;
 begin
   Result := Max(Clip.Beat + 1/4,
-    Timing.SecondsToBeat(Timing.BeatToSeconds(Clip.Beat) + Clip.Source.Duration));
+    Timing.SecondsToBeat(Timing.BeatToSeconds(Clip.Beat) + Clip.DurationSeconds));
 end;
 
 function TLipSyncProject.ContentEndBeat: Double;
@@ -493,6 +561,39 @@ begin
   end;
 end;
 
+function TLipSyncProject.CheckMissingAssets: Boolean;
+var
+  Character: TLipSyncCharacter;
+  Clip: TLipSyncClip;
+begin
+  Result := False;
+  if not FAudioMissing and (FAudioPath<>'') and not FileExists(FAudioPath) then
+  begin
+    FAudioMissing := True;
+    Result := True;
+  end;
+  for Character in Characters do
+  begin
+    if not Character.PsdMissing and (Character.PSDPath<>'') and not FileExists(Character.PSDPath) then
+    begin
+      Character.PsdMissing := True;
+      Result := True;
+    end;
+    for Clip in Character.Clips do
+      if not Clip.Missing and (Clip.Path<>'') and not FileExists(Clip.Path) then
+      begin
+        Clip.Missing := True;
+        Result := True;
+      end;
+  end;
+end;
+
+procedure TLipSyncProject.MarkRelink;
+var Revision: TGUID;
+begin
+  if CreateGUID(Revision)=0 then FRelinkRevision := GUIDToString(Revision);
+end;
+
 function TLipSyncProject.SaveJSON: string;
 var
   Arrangement, TrackObj, ClipObj, EffectObj: TJSONObject;
@@ -505,6 +606,7 @@ begin
   FRoot.RemovePair('arrangement').Free;
   FRoot.AddPair('arrangement', Arrangement);
   Arrangement.AddPair('audio', FAudioPath);
+  if FRelinkRevision<>'' then Arrangement.AddPair('relinkRevision',FRelinkRevision);
   Arrangement.AddPair('timing', TJSONObject.ParseJSONValue(Timing.TimingJSON));
   Tracks := TJSONArray.Create;
   Arrangement.AddPair('characters', Tracks);
@@ -522,6 +624,7 @@ begin
       Clips.AddElement(ClipObj);
       ClipObj.AddPair('path', Clip.Path);
       ClipObj.AddPair('beat', TJSONNumber.Create(Clip.Beat));
+      if Clip.DurationSeconds>0 then ClipObj.AddPair('duration',TJSONNumber.Create(Clip.DurationSeconds));
     end;
     Effects := TJSONArray.Create;
     TrackObj.AddPair('effects',Effects);

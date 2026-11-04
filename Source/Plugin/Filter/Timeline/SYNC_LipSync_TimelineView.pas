@@ -29,6 +29,8 @@ type
     function SnapBeat(Timing: TMusicStudioTempoMap; Beat: Double): Double;
     function TempoRect(Timing: TMusicStudioTempoMap; Index,Width: Integer): TRect;
     function TempoHit(Timing: TMusicStudioTempoMap; X,Y,Width: Integer): Integer;
+    // 欠損クリップは差し替え可能な表示幅を確保する。作品の拍位置と長さは変更しない。
+    function ClipRight(Project: TLipSyncProject; Clip: TLipSyncClip): Integer;
   end;
 
   // ポインターはフォームから描画中だけ借用する。ドラッグ候補は未保存の表示用データ。
@@ -132,6 +134,12 @@ begin
   if (Y<TEMPO_TOP) or (Y>=RULER_HEIGHT) or (X<HEADER_WIDTH) then Exit;
   for I := Timing.PointCount-1 downto 0 do
     if TempoRect(Timing,I,Width).Contains(Point(X,Y)) then Exit(I);
+end;
+
+function TLipSyncTimelineView.ClipRight(Project: TLipSyncProject; Clip: TLipSyncClip): Integer;
+begin
+  Result := XAt(Project.EndBeat(Clip));
+  if Clip.Missing then Result := Max(Result,XAt(Clip.Beat)+76);
 end;
 
 procedure PaintTempoMarkers(Canvas: TCanvas; Width,Height: Integer; Timing: TMusicStudioTempoMap;
@@ -241,21 +249,38 @@ begin
     C.FillRect(Rect(0, Y, HEADER_WIDTH, Y + View.RowHeight - 1));
     if Row = 0 then
     begin
-      C.TextOut(8, Y + 8, '1  基準音源 (WAV / MP3)');
-      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+34,ExtractFileName(Project.AudioPath));
+      Text := '1  基準音源 (WAV / MP3)';
+      if Project.AudioMissing then
+      begin
+        C.Font.Color := $009C9CFF;
+        Text := '欠損: 基準音源 (WAV / MP3)';
+      end;
+      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+8,Text);
+      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+26,ExtractFileName(Project.AudioPath));
+      C.Font.Color := $00E6E6E6;
     end
     else
     begin
       Character := Project.Characters[Row - 1];
-      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+8,
-        IntToStr(Row + 1) + '  ' + ExtractFileName(Character.PSDPath));
-      Character.EnsureThumbnail;
-      if not Character.Thumbnail.Empty then
+      Text := IntToStr(Row+1)+'  '+ExtractFileName(Character.PSDPath);
+      if Character.PsdMissing then
       begin
-        Thumb := MusicStudioFitFrameRect(Rect(8,Y+29,65,Y+View.RowHeight-3),
-          Character.Thumbnail.Width, Character.Thumbnail.Height);
-        C.StretchDraw(Thumb, Character.Thumbnail);
+        C.Font.Color := $009C9CFF;
+        Text := '欠損: '+Text;
+        C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+31,'PSD をドロップして差し替え');
+      end
+      else
+      begin
+        Character.EnsureThumbnail;
+        if not Character.Thumbnail.Empty then
+        begin
+          Thumb := MusicStudioFitFrameRect(Rect(8,Y+29,65,Y+View.RowHeight-3),
+            Character.Thumbnail.Width,Character.Thumbnail.Height);
+          C.StretchDraw(Thumb,Character.Thumbnail);
+        end;
       end;
+      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+8,Text);
+      C.Font.Color := $00E6E6E6;
     end;
     C.Pen.Color := $00404040;
     C.MoveTo(0, Y + View.RowHeight - 1);
@@ -318,6 +343,15 @@ begin
     end;
     C.Brush.Style := bsSolid;
     PaintTempoMarkers(C,W,H,Project.Timing,View,State.SelectedTempo);
+    if Project.AudioMissing then
+    begin
+      R := Rect(HEADER_WIDTH+1,RULER_HEIGHT+1,W,RULER_HEIGHT+View.RowHeight-1);
+      C.Brush.Color := $00393770;
+      C.Brush.Style := bsSolid;
+      C.FillRect(R);
+      C.Brush.Style := bsClear;
+      C.TextRect(R,R.Left+8,R.Top+7,'WAV / MP3 をドロップして差し替え');
+    end;
     Audio := Project.Audio;
     if Assigned(Audio) and Audio.Done and (Length(Audio.Waveform) > 0) then
     begin
@@ -347,16 +381,28 @@ begin
       begin
         if State.ClipDragging and (State.DragRow > 0) and (Clip = State.Clip) then Continue;
         A := View.XAt(Clip.Beat);
-        B := View.XAt(Project.EndBeat(Clip));
+        B := View.ClipRight(Project,Clip);
         if (B <= HEADER_WIDTH) or (A >= W) then Continue;
         R := Rect(Max(A,HEADER_WIDTH),Y+3,Min(B,W),Y+View.RowHeight-3);
         C.Brush.Color := $00574733;
         if Clip = State.Clip then C.Brush.Color := $00806036;
-        C.FillRect(R);
         Text := ExtractFileName(Clip.Path);
-        if Clip.Track < 0 then Text := Text + '（歌詞なし）';
+        if Clip.Missing then
+        begin
+          C.Brush.Color := $00393770;
+          if Clip=State.Clip then C.Brush.Color := $00515199;
+          Text := '欠損: '+Text;
+        end
+        else if Clip.Track<0 then Text := Text+'（歌詞なし）';
+        C.FillRect(R);
         C.Brush.Style := bsClear;
         C.TextRect(R, Max(A+4,HEADER_WIDTH+2),Y+6,Text);
+        if Clip.Missing then
+        begin
+          C.TextRect(R,R.Left+4,Y+26,'ドロップして差し替え');
+          C.Brush.Style := bsSolid;
+          Continue;
+        end;
         Start := Project.Timing.BeatToSeconds(Clip.Beat);
         for Note in Clip.Source.Notes do
           if (Note.TrackIndex = Clip.Track) and (Note.Lyric <> '') then
@@ -377,7 +423,7 @@ begin
     begin
       Y := View.RowY(State.DragRow);
       X := View.XAt(State.DragBeat);
-      B := View.XAt(Project.Timing.SecondsToBeat(Project.Timing.BeatToSeconds(State.DragBeat) + State.Clip.Source.Duration));
+      B := View.XAt(Project.Timing.SecondsToBeat(Project.Timing.BeatToSeconds(State.DragBeat) + State.Clip.DurationSeconds));
       C.Brush.Color := $007B5B3B;
       C.FillRect(Rect(X, Y+3, Max(X+8,B), Y+View.RowHeight-3));
     end;

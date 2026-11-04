@@ -59,7 +59,7 @@ type
     FDragBeat, FDragOffset, FCursor: Double;
     FDragging, FClipPressed, FAudioReady: Boolean;
     FWidth, FHeight: Integer;
-    FSerial: UInt64;
+    FSerial, FMissingCheckTick: UInt64;
     FTimelineBuffer, FStageBuffer, FImage, FBackground: TBitmap;
     procedure DropFiles(var Msg: TMessage); message WM_DROPFILES;
     procedure BuildUI;
@@ -95,7 +95,7 @@ type
     procedure SetEditorVisible(Value: Boolean);
     function MaxTopRow: Integer;
     procedure RefreshView;
-    procedure AddMedia(const Path: string; Row: Integer; Beat: Double);
+    procedure AddMedia(const Path: string; Row: Integer; Beat: Double; Target: TLipSyncClip);
     procedure TogglePlayback;
     procedure StopPlayback(ResetCursor: Boolean);
     procedure UpdatePlaybackButton;
@@ -451,14 +451,13 @@ function TFormLipSyncArrangement.ClipAt(Row, X: Integer): TLipSyncClip;
 var
   Clips: System.Generics.Collections.TObjectList<TLipSyncClip>;
   I: Integer;
-  Beat: Double;
 begin
   Result := nil;
   if not IsCharacterRow(Row) or (X < HEADER_WIDTH) then Exit;
-  Beat := FTimelineView.BeatAt(X);
   Clips := FProject.Characters[Row - 1].Clips;
   for I := Clips.Count - 1 downto 0 do
-    if (Beat >= Clips[I].Beat) and (Beat < FProject.EndBeat(Clips[I])) then Exit(Clips[I]);
+    if (X>=FTimelineView.XAt(Clips[I].Beat)) and
+      (X<FTimelineView.ClipRight(FProject,Clips[I])) then Exit(Clips[I]);
 end;
 
 procedure TFormLipSyncArrangement.RefreshView;
@@ -669,6 +668,7 @@ begin
     for I := FProject.Characters.Count - 1 downto 0 do
     begin
       Character := FProject.Characters[I];
+      if Character.PsdMissing then Continue;
       if (I = FSelected) and (FStageGrip <> 0) then
         Bounds := Character.Scene.Placement(Frame,FWidth,FHeight,FStageDraft)
       else
@@ -698,6 +698,12 @@ var
   State: string;
 begin
   if FProject = nil then Exit;
+  if GetTickCount64-FMissingCheckTick>=1000 then
+  begin
+    FMissingCheckTick := GetTickCount64;
+    if FProject.CheckMissingAssets then RefreshView;
+    if FProject.AudioMissing and Assigned(FPlayback) then StopPlayback(False);
+  end;
   if Assigned(FReadBackground) and FReadBackground(FSerial,Background) and
     (Length(Background.Pixels)>0) then
   begin
@@ -773,6 +779,10 @@ begin
   end
   else
     FClip := ClipAt(Row,X);
+  if Assigned(FClip) and FClip.Missing then FStatus.Caption := '欠損: '+FClip.Path
+  else if (Row=0) and FProject.AudioMissing then FStatus.Caption := '欠損: '+FProject.AudioPath
+  else if IsCharacterRow(Row) and FProject.Characters[Row-1].PsdMissing then
+    FStatus.Caption := '欠損: '+FProject.Characters[Row-1].PSDPath;
   if (Button = mbLeft) and (ssDouble in Shift) and (X < HEADER_WIDTH) and
     IsCharacterRow(Row) then
   begin
@@ -1000,24 +1010,36 @@ begin
   UpdateTimelineCursor(X,Y);
   RefreshView;
 end;
-procedure TFormLipSyncArrangement.AddMedia(const Path: string; Row: Integer; Beat: Double);
+procedure TFormLipSyncArrangement.AddMedia(const Path: string; Row: Integer; Beat: Double;
+  Target: TLipSyncClip);
 var
   Character: TLipSyncCharacter;
+  Relinking: Boolean;
 begin
+  Relinking := False;
   if not FileExists(Path) then raise EArgumentException.Create('ファイルが見つかりません。');
   FSelectedTempo := -1;
   if SameText(ExtractFileExt(Path),'.psd') then
   begin
-    Character := TLipSyncCharacter.Create(Path,'{}');
-    if not Character.Scene.Document.Loaded then
+    if IsCharacterRow(Row) and FProject.Characters[Row-1].PsdMissing then
     begin
-      try
-        raise EArgumentException.Create(Character.Scene.Document.LastError);
-      finally
-        Character.Free;
+      FProject.Characters[Row-1].ReplacePSD(Path);
+      Relinking := True;
+      FSelected := Row-1;
+    end
+    else
+    begin
+      Character := TLipSyncCharacter.Create(Path,'{}');
+      if not Character.Scene.Document.Loaded then
+      begin
+        try
+          raise EArgumentException.Create(Character.Scene.Document.LastError);
+        finally
+          Character.Free;
+        end;
       end;
+      FSelected := FProject.Characters.Add(Character);
     end;
-    FSelected := FProject.Characters.Add(Character);
     FClip := nil;
     FEffect := nil;
     RefreshView;
@@ -1028,7 +1050,8 @@ begin
     case LipSyncMode(Path) of
       lmEnvelope:
         begin
-          StopPlayback(True);
+          Relinking := FProject.AudioMissing;
+          StopPlayback(not Relinking);
           FProject.SetAudio(Path);
           FAudioReady := False;
         end;
@@ -1038,12 +1061,22 @@ begin
             raise EArgumentException.Create('歌唱データはキャラクターのタイムラインへ置いてください。');
           FSelected := Row-1;
           FEffect := nil;
-          FClip := TLipSyncClip.Create(Path, Beat, True);
-          FProject.Characters[FSelected].Clips.Add(FClip);
+          if Assigned(Target) and Target.Missing then
+          begin
+            Target.ReplaceSource(Path);
+            Relinking := True;
+            FClip := Target;
+          end
+          else
+          begin
+            FClip := TLipSyncClip.Create(Path,Beat,True);
+            FProject.Characters[FSelected].Clips.Add(FClip);
+          end;
         end;
     else
       raise EArgumentException.Create('このファイル形式には対応していません。');
     end;
+  if Relinking then FProject.MarkRelink;
   FStatus.Caption := ExtractFileName(Path);
   RefreshView;
 end;
@@ -1053,18 +1086,23 @@ var
   Drop: HDROP;
   P: TPoint;
   I, Count, Size: Cardinal;
-  Row: Integer;
+  Row, MediaRow: Integer;
+  CanDropSinging: Boolean;
   Path: string;
   Beat: Double;
   Lane: TLipSyncEffectLane;
+  Target: TLipSyncClip;
 begin
   Drop := HDROP(Msg.WParam);
   try
     if not FMain.Visible or not FTempoEditor.Finish then Exit;
     DragQueryPoint(Drop,P);
     P := FTimeline.ScreenToClient(ClientToScreen(P));
+    if FProject.CheckMissingAssets then RefreshView;
     Row := FTimelineView.RowAt(P.Y);
-    if IsEffectPosition(Row,P.Y,Lane) then Row := -1;
+    Target := nil;
+    CanDropSinging := not IsEffectPosition(Row,P.Y,Lane);
+    if CanDropSinging then Target := ClipAt(Row,P.X);
     Beat := FTimelineView.SnapBeat(FProject.Timing,FTimelineView.BeatAt(P.X));
     Count := DragQueryFile(Drop,$FFFFFFFF,nil,0);
     I := 0;
@@ -1074,8 +1112,15 @@ begin
       SetLength(Path,Size);
       DragQueryFile(Drop,I,PChar(Path),Size+1);
       try
-        AddMedia(Path,Row,Beat);
-        if SameText(ExtractFileExt(Path),'.psd') then Row := FSelected+1;
+        MediaRow := Row;
+        if (LipSyncMode(Path)=lmPhonemes) and not CanDropSinging then MediaRow := -1;
+        AddMedia(Path,MediaRow,Beat,Target);
+        if SameText(ExtractFileExt(Path),'.psd') then
+        begin
+          if Row<>FSelected+1 then Target := nil;
+          Row := FSelected+1;
+          CanDropSinging := True;
+        end;
       except on E: Exception do FStatus.Caption := E.Message; end;
       Inc(I);
     end;
