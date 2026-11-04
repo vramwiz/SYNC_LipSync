@@ -52,8 +52,9 @@ type
     FEffectRow, FEffectDownX: Integer;
     FEffectFrom, FEffectTo, FEffectAnchor: Double;
     FCopyItem, FPasteItem, FDuplicateItem, FDeleteItem, FDeleteCharacterItem: TMenuItem;
-    FTempoItem, FUndoItem, FRedoItem: TMenuItem;
+    FTempoItem, FUndoItem, FRedoItem, FFlipXItem, FFlipYItem: TMenuItem;
     FSelected: Integer;
+    FCharacterHeaderSelected: Boolean;
     FClip, FClipboard: TLipSyncClip;
     FDownX, FDragRow: Integer;
     FDragBeat, FDragOffset, FCursor: Double;
@@ -109,7 +110,10 @@ type
   protected
     procedure CreateWnd; override;
     procedure DestroyWnd; override;
+    procedure Resize; override;
+    procedure DoAfterMonitorDpiChanged(OldDPI,NewDPI: Integer); override;
   public
+    procedure ScaleForPPI(NewPPI: Integer); override;
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     // フォームが編集用モデルを所有する。背景取得と保存のコールバックは表示中だけ使用する。
@@ -127,10 +131,10 @@ uses
   SYNC_LipSync_ExpressionForm, SYNC_LipSync_Presentation;
 
 const
-  ROW_HEIGHT = 70;
+  ROW_HEIGHT = 88;
   PX_PER_BEAT = 46;
-  MIN_ROW_HEIGHT = 58;
-  MAX_ROW_HEIGHT = 160;
+  MIN_ROW_HEIGHT = 80;
+  MAX_ROW_HEIGHT = 192;
 
 type
   TLipSyncPaintBox = class(TPaintBox)
@@ -145,24 +149,28 @@ begin
 end;
 
 constructor TFormLipSyncArrangement.Create(AOwner: TComponent);
+var
+  WorkArea: TRect;
 begin
   inherited CreateNew(AOwner);
   Caption := '口パク - 統合編集';
   Position := poScreenCenter;
-  ClientWidth := 1180;
-  ClientHeight := 710;
-  Constraints.MinWidth := 900;
-  Constraints.MinHeight := 670;
+  FTimelineView.RowHeight := ROW_HEIGHT;
+  FTimelineView.PixelsPerBeat := PX_PER_BEAT;
+  FTimelineView.SetDPI(PixelsPerInch);
+  WorkArea := Screen.WorkAreaRect;
+  ClientWidth := Min(FTimelineView.Px(1260),WorkArea.Width-FTimelineView.Px(20));
+  ClientHeight := Min(FTimelineView.Px(760),WorkArea.Height-FTimelineView.Px(46));
+  Constraints.MinWidth := Min(FTimelineView.Px(940),WorkArea.Width*9 div 10);
+  Constraints.MinHeight := Min(FTimelineView.Px(670),WorkArea.Height*9 div 10);
   Font.Name := 'Yu Gothic UI';
-  Font.Height := -13;
+  Font.Height := -FTimelineView.Px(16);
   KeyPreview := True;
   OnKeyDown := FormKey;
   OnKeyUp := FormKeyUp;
   OnDeactivate := FormDeactivate;
   OnMouseWheel := Wheel;
   OnCloseQuery := CloseForm;
-  FTimelineView.RowHeight := ROW_HEIGHT;
-  FTimelineView.PixelsPerBeat := PX_PER_BEAT;
   FSelected := -1;
   FSelectedTempo := -1;
   FHistory := TLipSyncEditHistory.Create;
@@ -172,6 +180,30 @@ begin
   FImage := Vcl.Graphics.TBitmap.Create;
   ApplySyncMusicStudioDarkForm(Self);
   BuildUI;
+  Resize;
+end;
+
+procedure TFormLipSyncArrangement.Resize;
+begin
+  inherited;
+  if (FStage<>nil) and not (csDestroying in ComponentState) then
+    FStage.Height := Min(FTimelineView.Px(232),Max(ClientHeight div 4,ClientHeight-FTimelineView.Px(530)));
+end;
+
+procedure TFormLipSyncArrangement.ScaleForPPI(NewPPI: Integer);
+begin
+  inherited;
+  FTimelineView.SetDPI(PixelsPerInch);
+  Resize;
+  if FProject<>nil then RefreshView;
+end;
+
+procedure TFormLipSyncArrangement.DoAfterMonitorDpiChanged(OldDPI,NewDPI: Integer);
+begin
+  inherited;
+  FTimelineView.SetDPI(NewDPI);
+  Resize;
+  if FProject<>nil then RefreshView;
 end;
 
 destructor TFormLipSyncArrangement.Destroy;
@@ -210,11 +242,15 @@ var
   Motion: TMusicStudioRhythmType;
   MotionItem, Entrance, ExitMenu, CueItem: TMenuItem;
   Cue: TLipSyncPresentation;
+  function Px(Value: Integer): Integer;
+  begin
+    Result := FTimelineView.Px(Value);
+  end;
   procedure Tool(Parent: TPanel; const Text: string; X, W, Tag: Integer);
   begin
     Button := TButton.Create(Self);
     Button.Parent := Parent;
-    Button.SetBounds(X, 6, W, 26);
+    Button.SetBounds(Px(X),Px(7),Px(W),Px(32));
     Button.Caption := Text;
     Button.Tag := Tag;
     Button.OnClick := Command;
@@ -234,15 +270,18 @@ begin
   Footer := TPanel.Create(Self);
   Footer.Parent := Self;
   Footer.Align := alBottom;
-  Footer.Height := 39;
+  Footer.Height := Px(47);
   ApplySyncMusicStudioDarkPanel(Footer);
-  Tool(Footer, '閉じる', 8, 144, 9);
+  Tool(Footer,'閉じる',10,178,9);
   FCloseButton := Button;
   FCloseButton.Cancel := True;
   FStatus := TLabel.Create(Self);
   FStatus.Parent := Footer;
-  FStatus.SetBounds(164, 10, 640, 22);
   FStatus.AutoSize := False;
+  FStatus.AlignWithMargins := True;
+  FStatus.Margins.Left := Px(202);
+  FStatus.Align := alClient;
+  FStatus.Layout := tlCenter;
 
   FMain := TPanel.Create(Self);
   FMain.Parent := Self;
@@ -260,24 +299,24 @@ begin
   Toolbar := TPanel.Create(Self);
   Toolbar.Parent := FMain;
   Toolbar.Align := alTop;
-  Toolbar.Height := 39;
+  Toolbar.Height := Px(47);
   ApplySyncMusicStudioDarkPanel(Toolbar);
-  Tool(Toolbar, '▶', 8, 36, 3);
+  Tool(Toolbar,'▶',10,44,3);
   FPlayButton := Button;
   FPlayButton.Font.Name := 'Segoe UI Symbol';
   FPlayButton.ShowHint := True;
   UpdatePlaybackButton;
-  Tool(Toolbar, '■', 50, 36, 4);
+  Tool(Toolbar,'■',62,44,4);
   Button.Font.Name := 'Segoe UI Symbol';
   Button.Hint := '停止して先頭へ';
   Button.ShowHint := True;
   LabelText := TLabel.Create(Self);
   LabelText.Parent := Toolbar;
-  LabelText.SetBounds(100, 11, 34, 18);
+  LabelText.SetBounds(Px(124),Px(12),Px(42),Px(24));
   LabelText.Caption := 'BPM';
   FBPM := TEdit.Create(Self);
   FBPM.Parent := Toolbar;
-  FBPM.SetBounds(135, 7, 60, 25);
+  FBPM.SetBounds(Px(174),Px(8),Px(76),Px(30));
   ApplySyncMusicStudioDarkEdit(FBPM);
   FBPM.OnExit := CommitBPM;
   FBPM.OnKeyDown := BPMKey;
@@ -291,7 +330,7 @@ begin
   FStage := TLipSyncPaintBox.Create(Self);
   FStage.Parent := Center;
   FStage.Align := alTop;
-  FStage.Height := 215;
+  FStage.Height := Px(232);
   FStage.OnPaint := PaintStage;
   FStage.OnMouseDown := StageMouseDown;
   FStage.OnMouseMove := StageMouseMove;
@@ -311,6 +350,10 @@ begin
   FDuplicateItem := MenuItem('複製', 14, Ord('D'), [ssCtrl]);
   FDeleteItem := MenuItem('削除', 13, VK_DELETE);
   FDeleteCharacterItem := MenuItem('キャラクターを削除', 15);
+  FFlipXItem := MenuItem('左右反転',19);
+  FFlipYItem := MenuItem('上下反転',20);
+  FFlipXItem.Visible := False;
+  FFlipYItem.Visible := False;
   FTempoItem := MenuItem('テンポを追加…',16);
   FUndoItem := MenuItem('元に戻す',17,Ord('Z'),[ssCtrl]);
   FRedoItem := MenuItem('やり直す',18,Ord('Y'),[ssCtrl]);
@@ -389,7 +432,7 @@ begin
   Result := nil;
   EndCandidate := nil;
   Grip := rgCreate;
-  if (X<HEADER_WIDTH) or not IsCharacterRow(Row) then Exit;
+  if (X<FTimelineView.HeaderWidth) or not IsCharacterRow(Row) then Exit;
   for Effect in FProject.Characters[Row-1].Effects do
   begin
     if Effect.Lane<>Lane then Continue;
@@ -453,7 +496,7 @@ var
   I: Integer;
 begin
   Result := nil;
-  if not IsCharacterRow(Row) or (X < HEADER_WIDTH) then Exit;
+  if not IsCharacterRow(Row) or (X < FTimelineView.HeaderWidth) then Exit;
   Clips := FProject.Characters[Row - 1].Clips;
   for I := Clips.Count - 1 downto 0 do
     if (X>=FTimelineView.XAt(Clips[I].Beat)) and
@@ -477,7 +520,7 @@ end;
 function TFormLipSyncArrangement.MaxTopRow: Integer;
 begin
   Result := Max(0, FProject.Characters.Count -
-    Max(1, (FTimeline.Height - RULER_HEIGHT - FTimelineView.RowHeight) div FTimelineView.CharacterHeight));
+    Max(1, (FTimeline.Height - FTimelineView.RulerHeight - FTimelineView.RowHeight) div FTimelineView.CharacterHeight));
 end;
 
 procedure TFormLipSyncArrangement.Wheel(Sender: TObject; Shift: TShiftState;
@@ -502,28 +545,28 @@ begin
   Handled := True;
   if FClipPressed or FEffectPressed or not FTempoEditor.Finish then Exit;
   Steps := Delta / 120;
-  if P.X < HEADER_WIDTH then
+  if P.X < FTimelineView.HeaderWidth then
   begin
-    if P.Y < RULER_HEIGHT then Exit;
+    if P.Y < FTimelineView.RulerHeight then Exit;
     if ssCtrl in Shift then
     begin
       Row := FTimelineView.RowAt(P.Y);
       FTimelineView.RowHeight := EnsureRange(Round(FTimelineView.RowHeight * Power(1.15, Steps)),
-        MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
-      if Row > 0 then FTimelineView.TopRow := Row-1-Max(0,P.Y-RULER_HEIGHT-FTimelineView.RowHeight) div FTimelineView.CharacterHeight;
+        FTimelineView.Px(MIN_ROW_HEIGHT),FTimelineView.Px(MAX_ROW_HEIGHT));
+      if Row > 0 then FTimelineView.TopRow := Row-1-Max(0,P.Y-FTimelineView.RulerHeight-FTimelineView.RowHeight) div FTimelineView.CharacterHeight;
     end
     else
       FTimelineView.TopRow := FTimelineView.TopRow - Sign(Delta) * Max(1, Round(Abs(Steps)));
     FTimelineView.TopRow := EnsureRange(FTimelineView.TopRow, 0, MaxTopRow);
   end
-  else if (P.Y < RULER_HEIGHT) or (ssCtrl in Shift) then
+  else if (P.Y < FTimelineView.RulerHeight) or (ssCtrl in Shift) then
   begin
     Beat := FTimelineView.BeatAt(P.X);
-    FTimelineView.PixelsPerBeat := EnsureRange(FTimelineView.PixelsPerBeat * Power(1.2, Steps), 6.0, 320.0);
-    FTimelineView.StartBeat := Beat - (P.X - HEADER_WIDTH) / FTimelineView.PixelsPerBeat;
+    FTimelineView.PixelsPerBeat := EnsureRange(FTimelineView.PixelsPerBeat*Power(1.2,Steps),FTimelineView.Px(6),FTimelineView.Px(320));
+    FTimelineView.StartBeat := Beat - (P.X - FTimelineView.HeaderWidth) / FTimelineView.PixelsPerBeat;
   end
   else
-    FTimelineView.StartBeat := FTimelineView.StartBeat - Steps * 120 / FTimelineView.PixelsPerBeat;
+    FTimelineView.StartBeat := FTimelineView.StartBeat - Steps*FTimelineView.Px(120)/FTimelineView.PixelsPerBeat;
   FTimelineView.StartBeat := EnsureRange(FTimelineView.StartBeat, 0.0, FLastBeat + 16);
   FTimeline.Invalidate;
 end;
@@ -757,6 +800,7 @@ var
   Lane: TLipSyncEffectLane;
   Grip: TLipSyncRangeGrip;
   OnEffectLane: Boolean;
+  Transform: TMusicStudioPsdTransform;
   Branch, Item: TMenuItem;
 begin
   if not (Button in [mbLeft,mbRight]) or not FTempoEditor.Finish then Exit;
@@ -772,6 +816,7 @@ begin
   end;
   FEffect := nil;
   OnEffectLane := IsEffectPosition(Row,Y,Lane);
+  FCharacterHeaderSelected := IsCharacterRow(Row) and not OnEffectLane and (X<FTimelineView.HeaderWidth);
   if OnEffectLane then
   begin
     FClip := nil;
@@ -782,40 +827,50 @@ begin
   if Assigned(FClip) and FClip.Missing then FStatus.Caption := '欠損: '+FClip.Path
   else if (Row=0) and FProject.AudioMissing then FStatus.Caption := '欠損: '+FProject.AudioPath
   else if IsCharacterRow(Row) and FProject.Characters[Row-1].PsdMissing then
-    FStatus.Caption := '欠損: '+FProject.Characters[Row-1].PSDPath;
-  if (Button = mbLeft) and (ssDouble in Shift) and (X < HEADER_WIDTH) and
-    IsCharacterRow(Row) then
+    FStatus.Caption := '欠損: '+FProject.Characters[Row-1].PSDPath
+  else if FCharacterHeaderSelected then FStatus.Caption := FProject.Characters[Row-1].PSDPath;
+  if (Button=mbLeft) and (ssDouble in Shift) and FCharacterHeaderSelected then
   begin
     OpenPSD;
     Exit;
   end;
   if Button = mbRight then
   begin
-    if X >= HEADER_WIDTH then FCursor := FProject.Timing.BeatToSeconds(FTimelineView.BeatAt(X));
+    if X >= FTimelineView.HeaderWidth then FCursor := FProject.Timing.BeatToSeconds(FTimelineView.BeatAt(X));
     RefreshView;
     FCopyItem.Enabled := Assigned(FClip);
     FDuplicateItem.Enabled := Assigned(FClip);
-    FDeleteItem.Enabled := (FSelectedTempo>0) or Assigned(FClip) or Assigned(FEffect);
-    FTempoItem.Enabled := X>=HEADER_WIDTH;
+    FDeleteItem.Enabled := FCharacterHeaderSelected or (FSelectedTempo>0) or Assigned(FClip) or Assigned(FEffect);
+    if FCharacterHeaderSelected then FDeleteItem.Caption := 'トラックを削除'
+    else FDeleteItem.Caption := '削除';
+    FTempoItem.Enabled := X>=FTimelineView.HeaderWidth;
     if FSelectedTempo>=0 then FTempoItem.Caption := 'テンポを編集…'
     else FTempoItem.Caption := 'テンポを追加…';
     FUndoItem.Enabled := FHistory.CanStep(-1);
     FRedoItem.Enabled := FHistory.CanStep(1);
     FPasteItem.Enabled := IsCharacterRow(Row) and Assigned(FClipboard);
-    FDeleteCharacterItem.Enabled := IsCharacterRow(Row);
+    FDeleteCharacterItem.Visible := IsCharacterRow(Row) and not FCharacterHeaderSelected;
+    FFlipXItem.Visible := FCharacterHeaderSelected;
+    FFlipYItem.Visible := FFlipXItem.Visible;
+    if FFlipXItem.Visible then
+    begin
+      Transform := FProject.Characters[FSelected].Scene.TransformFor(FWidth,FHeight);
+      FFlipXItem.Checked := Transform.FlipX;
+      FFlipYItem.Checked := Transform.FlipY;
+    end;
     P := FTimeline.ClientToScreen(Point(X,Y));
     FMenu.Popup(P.X,P.Y);
     Exit;
   end;
   StopPlayback(False);
-  if X >= HEADER_WIDTH then FCursor := FProject.Timing.BeatToSeconds(FTimelineView.BeatAt(X));
+  if X >= FTimelineView.HeaderWidth then FCursor := FProject.Timing.BeatToSeconds(FTimelineView.BeatAt(X));
   if (FSelectedTempo>=0) and (ssDouble in Shift) then
   begin
-    FTempoEditor.Open(FTimelineView.XAt(FTempoBeat),FTempoBeat,FProject.Timing.BPMAt(FTempoBeat));
+    FTempoEditor.Open(FTimelineView.XAt(FTempoBeat),FTempoBeat,FProject.Timing.BPMAt(FTempoBeat),FTimelineView);
     RefreshView;
     Exit;
   end;
-  if OnEffectLane and (X>=HEADER_WIDTH) then
+  if OnEffectLane and (X>=FTimelineView.HeaderWidth) then
   begin
     if (ssDouble in Shift) and Assigned(FEffect) then
     begin
@@ -909,7 +964,7 @@ var
     else Result := FTimelineView.SnapBeat(FProject.Timing,Beat);
   end;
 begin
-  FEffectChanged := Abs(X-FEffectDownX)>=4;
+  FEffectChanged := Abs(X-FEffectDownX)>=FTimelineView.Px(4);
   if not FEffectChanged then Exit;
   Step := FTimelineView.GridStep(FProject.Timing,FEffectAnchor);
   Position := FTimelineView.BeatAt(X);
@@ -945,10 +1000,10 @@ var
   Lane: TLipSyncEffectLane;
 begin
   Row := FTimelineView.RowAt(Y);
-  if not FDragging and (Abs(X-FDownX)<4) and (Row=FSelected+1) then Exit;
+  if not FDragging and (Abs(X-FDownX)<FTimelineView.Px(4)) and (Row=FSelected+1) then Exit;
   FDragging := True;
   if IsCharacterRow(Row) and not IsEffectPosition(Row,Y,Lane) and
-    (X >= HEADER_WIDTH) and FTimeline.ClientRect.Contains(Point(X,Y)) then
+    (X >= FTimelineView.HeaderWidth) and FTimeline.ClientRect.Contains(Point(X,Y)) then
   begin
     FDragRow := Row;
     FTimeline.Cursor := crSizeAll;
@@ -1019,6 +1074,7 @@ begin
   Relinking := False;
   if not FileExists(Path) then raise EArgumentException.Create('ファイルが見つかりません。');
   FSelectedTempo := -1;
+  FCharacterHeaderSelected := False;
   if SameText(ExtractFileExt(Path),'.psd') then
   begin
     if IsCharacterRow(Row) and FProject.Characters[Row-1].PsdMissing then
@@ -1231,7 +1287,11 @@ begin
   end
   else if not FClipPressed and not FEffectPressed then
   begin
-    if (Key=VK_DELETE) and (Shift=[]) then begin Command(FDeleteItem); Key := 0; end
+    if (Key=VK_DELETE) and (Shift=[]) and (FStageGrip=0) and not FStagePanning then
+    begin
+      Command(FDeleteItem);
+      Key := 0;
+    end
     else if (Shift=[ssCtrl]) and (Key=Ord('C')) then begin Command(FCopyItem); Key := 0; end
     else if (Shift=[ssCtrl]) and (Key=Ord('V')) then begin Command(FPasteItem); Key := 0; end
     else if (Shift=[ssCtrl]) and (Key=Ord('D')) then begin Command(FDuplicateItem); Key := 0; end
@@ -1255,10 +1315,12 @@ procedure TFormLipSyncArrangement.Command(Sender: TObject);
 var
   Tag: Integer;
   Character: TLipSyncCharacter;
+  Transform: TMusicStudioPsdTransform;
   Beat: Double;
 begin
   try
     Tag := TComponent(Sender).Tag;
+    if (Tag=13) and FCharacterHeaderSelected then Tag := 15;
     case Tag of
       3: TogglePlayback;
       4: StopPlayback(True);
@@ -1272,6 +1334,7 @@ begin
       12:
         if Assigned(FClipboard) and (FSelected>=0) then
         begin
+          FCharacterHeaderSelected := False;
           FEffect := nil;
           FClip := FClipboard.Duplicate(FTimelineView.SnapBeat(FProject.Timing,
             FProject.Timing.SecondsToBeat(FCursor)));
@@ -1304,8 +1367,8 @@ begin
           FClip := FClip.Duplicate(Beat);
           FProject.Characters[FSelected].Clips.Add(FClip);
           FCursor := FProject.Timing.BeatToSeconds(Beat);
-          if (FTimelineView.XAt(Beat) < HEADER_WIDTH) or (FTimelineView.XAt(Beat) >= FTimeline.Width) then
-            FTimelineView.StartBeat := Max(0.0, Beat - 24 / FTimelineView.PixelsPerBeat);
+          if (FTimelineView.XAt(Beat) < FTimelineView.HeaderWidth) or (FTimelineView.XAt(Beat) >= FTimeline.Width) then
+            FTimelineView.StartBeat := Max(0.0, Beat - FTimelineView.Px(24) / FTimelineView.PixelsPerBeat);
         end;
       15:
         if FSelected>=0 then
@@ -1316,13 +1379,28 @@ begin
           begin
             FClip := nil;
             FEffect := nil;
+            FCharacterHeaderSelected := False;
+            FSelectedBounds := TRect.Empty;
             FProject.Characters.Delete(FSelected);
             FSelected := Min(FSelected,FProject.Characters.Count-1);
+            FStatus.Caption := '';
           end;
         end;
-      16: FTempoEditor.Open(FTimelineView.XAt(FTempoBeat),FTempoBeat,FProject.Timing.BPMAt(FTempoBeat));
+      16: FTempoEditor.Open(FTimelineView.XAt(FTempoBeat),FTempoBeat,
+        FProject.Timing.BPMAt(FTempoBeat),FTimelineView);
       17: RestoreEdit(-1);
       18: RestoreEdit(1);
+      19,20:
+        if FSelected>=0 then
+        begin
+          Character := FProject.Characters[FSelected];
+          Transform := Character.Scene.TransformFor(FWidth,FHeight);
+          if Tag=19 then Transform.FlipX := not Transform.FlipX
+          else Transform.FlipY := not Transform.FlipY;
+          Character.UpdatePlacement(Transform);
+          FreeAndNil(Character.Thumbnail);
+          RecordEdit;
+        end;
     end;
     if Tag in [12..15] then RecordEdit;
     if ModalResult=mrNone then RefreshView;
@@ -1393,6 +1471,7 @@ begin
   FProject.Timing.SetBPMAt(Beat,BPM);
   FClip := nil;
   FEffect := nil;
+  FCharacterHeaderSelected := False;
   FSelectedTempo := FProject.Timing.TempoPointIndexAtBeat(Beat);
   FBPM.Text := FloatToStr(FProject.Timing.BPMAt(0));
   RecordEdit;
@@ -1416,6 +1495,7 @@ begin
   FClip := nil;
   FEffect := nil;
   FSelectedTempo := -1;
+  FCharacterHeaderSelected := False;
   FSelectedBounds := TRect.Empty;
   FProject.Free;
   FProject := Restored;
@@ -1448,7 +1528,7 @@ begin
     FPsdEditor.Parent := FEditorPanel;
     FPsdEditor.Align := alClient;
     FPsdEditor.SetEmbedded;
-    FPsdEditor.LoadSettings(Character.PSDPath,Music,Character.Settings,FWidth,FHeight,FReadBackground,
+    FPsdEditor.LoadSettings(Character.PSDPath,Music,Character.Settings,
       procedure(const PSDPath, MusicPath, JSON: string)
       begin
         Character.UpdateSettings(PSDPath,JSON);

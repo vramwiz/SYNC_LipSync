@@ -272,7 +272,7 @@ begin
   Image := TBitmap.Create;
   try
     if not Scene.Render(Image, 0, 0) then Exit;
-    Scale := Min(1.0, 64 / Max(Image.Width, Image.Height));
+    Scale := Min(1.0, 160 / Max(Image.Width, Image.Height));
     Thumbnail.SetSize(Max(1, Round(Image.Width*Scale)), Max(1, Round(Image.Height*Scale)));
     Thumbnail.Canvas.Brush.Color := TColor($002D2D2D);
     Thumbnail.Canvas.FillRect(Rect(0,0,Thumbnail.Width,Thumbnail.Height));
@@ -388,7 +388,7 @@ var
 begin
   if PsdMissing then Exit(False);
   Slot := 0;
-  Step := 3;
+  Step := High(LIP_SYNC_OPENING_SLOTS);
   Clip := ActiveClip(Timing, Seconds, Local);
   if Clip <> nil then
   begin
@@ -402,11 +402,7 @@ begin
     begin
       Index := Min(Count - 1, Floor(Seconds * Count / Audio.Info.Duration));
       Peak := Max(Abs(Audio.Waveform[Index].Minimum), Abs(Audio.Waveform[Index].Maximum));
-      if Peak > Threshold then
-      begin
-        Step := EnsureRange(Ceil(3 * (Peak - Threshold) / (1 - Threshold)), 1, 3);
-        Slot := 6 + Step;
-      end;
+      LipSyncVolumeMouth(Peak,Threshold,Slot,Step);
     end;
   end;
   Beat := Timing.SecondsToBeat(Max(0.0,Seconds));

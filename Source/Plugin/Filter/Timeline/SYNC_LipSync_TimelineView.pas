@@ -8,15 +8,24 @@ uses
   System.Types, Vcl.Graphics, SYNC_LipSync_Project, SYNC_MusicStudio_BeatData;
 
 const
-  HEADER_WIDTH = 192;
-  RULER_HEIGHT = 28;
-  TEMPO_TOP = 14;
+  HEADER_WIDTH = 224;
+  RULER_HEIGHT = 46;
+  TEMPO_TOP = 22;
 
 type
   // 0行目は固定音源。TopRowは先頭に表示するキャラクターの0始まりインデックス。
   TLipSyncTimelineView = record
+  private
+    FPixelsPerInch: Integer;
+  public
     StartBeat, PixelsPerBeat: Double;
     TopRow, RowHeight: Integer;
+    // サイズと座標変換を同じ表示倍率で更新する。
+    procedure SetDPI(PPI: Integer);
+    function Px(Value: Integer): Integer;
+    function HeaderWidth: Integer;
+    function RulerHeight: Integer;
+    function TempoTop: Integer;
     function BeatAt(X: Integer): Double;
     function XAt(Beat: Double): Integer;
     function RowAt(Y: Integer): Integer;
@@ -58,34 +67,64 @@ uses
   SYNC_MusicStudio_MotionData, SYNC_MusicStudio_SingingData, SYNC_LipSync_Presentation;
 
 
+procedure TLipSyncTimelineView.SetDPI(PPI: Integer);
+var
+  Previous: Integer;
+begin
+  Previous := Max(96,FPixelsPerInch);
+  RowHeight := MulDiv(RowHeight,PPI,Previous);
+  PixelsPerBeat := PixelsPerBeat*PPI/Previous;
+  FPixelsPerInch := PPI;
+end;
+
+function TLipSyncTimelineView.Px(Value: Integer): Integer;
+begin
+  Result := MulDiv(Value,Max(96,FPixelsPerInch),96);
+end;
+
+function TLipSyncTimelineView.HeaderWidth: Integer;
+begin
+  Result := Px(HEADER_WIDTH);
+end;
+
+function TLipSyncTimelineView.RulerHeight: Integer;
+begin
+  Result := Px(RULER_HEIGHT);
+end;
+
+function TLipSyncTimelineView.TempoTop: Integer;
+begin
+  Result := Px(TEMPO_TOP);
+end;
+
 function TLipSyncTimelineView.BeatAt(X: Integer): Double;
 begin
-  Result := EnsureRange(StartBeat + (X - HEADER_WIDTH) / PixelsPerBeat,
+  Result := EnsureRange(StartBeat + (X - HeaderWidth) / PixelsPerBeat,
     0.0, 1000000.0);
 end;
 
 function TLipSyncTimelineView.XAt(Beat: Double): Integer;
 begin
-  Result := HEADER_WIDTH + Round(EnsureRange((Beat - StartBeat) * PixelsPerBeat,
+  Result := HeaderWidth + Round(EnsureRange((Beat - StartBeat) * PixelsPerBeat,
     -100000000.0, 100000000.0));
 end;
 
 function TLipSyncTimelineView.RowAt(Y: Integer): Integer;
 begin
-  if Y < RULER_HEIGHT then Exit(-1);
-  if Y < RULER_HEIGHT + RowHeight then Exit(0);
-  Result := 1 + (Y - RULER_HEIGHT - RowHeight) div CharacterHeight + TopRow;
+  if Y < RulerHeight then Exit(-1);
+  if Y < RulerHeight + RowHeight then Exit(0);
+  Result := 1 + (Y - RulerHeight - RowHeight) div CharacterHeight + TopRow;
 end;
 
 function TLipSyncTimelineView.RowY(Row: Integer): Integer;
 begin
-  if Row = 0 then Result := RULER_HEIGHT
-  else Result := RULER_HEIGHT + RowHeight + (Row-1-TopRow)*CharacterHeight;
+  if Row = 0 then Result := RulerHeight
+  else Result := RulerHeight + RowHeight + (Row-1-TopRow)*CharacterHeight;
 end;
 
 function TLipSyncTimelineView.EffectHeight: Integer;
 begin
-  Result := Max(23,RowHeight div 3);
+  Result := Max(Px(28),RowHeight div 3);
 end;
 
 function TLipSyncTimelineView.CharacterHeight: Integer;
@@ -100,7 +139,7 @@ end;
 
 function TLipSyncTimelineView.GridStep(Timing: TMusicStudioTempoMap; Beat: Double): Double;
 begin
-  Result := Min(MusicStudioSnapStep(PixelsPerBeat),4/Timing.DenominatorAtBeat(Beat));
+  Result := Min(MusicStudioSnapStep(PixelsPerBeat*96/Max(96,FPixelsPerInch)),4/Timing.DenominatorAtBeat(Beat));
 end;
 
 function TLipSyncTimelineView.SnapBeat(Timing: TMusicStudioTempoMap; Beat: Double): Double;
@@ -120,18 +159,18 @@ function TLipSyncTimelineView.TempoRect(Timing: TMusicStudioTempoMap; Index,Widt
 var X, RightEdge: Integer;
 begin
   X := XAt(Timing.TempoPoint(Index).Beat);
-  if X<HEADER_WIDTH then Exit(TRect.Empty);
-  RightEdge := Min(Width,X+88);
+  if X<HeaderWidth then Exit(TRect.Empty);
+  RightEdge := Min(Width,X+Px(112));
   if Index+1<Timing.PointCount then
     RightEdge := Min(RightEdge,XAt(Timing.TempoPoint(Index+1).Beat));
-  Result := Rect(X,TEMPO_TOP,RightEdge,RULER_HEIGHT);
+  Result := Rect(X,TempoTop,RightEdge,RulerHeight);
 end;
 
 function TLipSyncTimelineView.TempoHit(Timing: TMusicStudioTempoMap; X,Y,Width: Integer): Integer;
 var I: Integer;
 begin
   Result := -1;
-  if (Y<TEMPO_TOP) or (Y>=RULER_HEIGHT) or (X<HEADER_WIDTH) then Exit;
+  if (Y<TempoTop) or (Y>=RulerHeight) or (X<HeaderWidth) then Exit;
   for I := Timing.PointCount-1 downto 0 do
     if TempoRect(Timing,I,Width).Contains(Point(X,Y)) then Exit(I);
 end;
@@ -139,7 +178,7 @@ end;
 function TLipSyncTimelineView.ClipRight(Project: TLipSyncProject; Clip: TLipSyncClip): Integer;
 begin
   Result := XAt(Project.EndBeat(Clip));
-  if Clip.Missing then Result := Max(Result,XAt(Clip.Beat)+76);
+  if Clip.Missing then Result := Max(Result,XAt(Clip.Beat)+Px(92));
 end;
 
 procedure PaintTempoMarkers(Canvas: TCanvas; Width,Height: Integer; Timing: TMusicStudioTempoMap;
@@ -161,7 +200,7 @@ begin
     Canvas.Brush.Color := $00604424;
     if I=Selected then Canvas.Brush.Color := $00825730;
     Canvas.FillRect(R);
-    Canvas.TextRect(R,R.Left+3,R.Top-1,FormatFloat('0.##',Timing.TempoPoint(I).BPM)+' BPM');
+    Canvas.TextRect(R,R.Left+View.Px(4),R.Top+View.Px(1),FormatFloat('0.##',Timing.TempoPoint(I).BPM)+' BPM');
   end;
 end;
 
@@ -180,17 +219,17 @@ begin
     begin
       if State.EffectDragging and (Effect=State.Effect) then
       begin
-        X1 := Max(HEADER_WIDTH,View.XAt(State.EffectFrom));
+        X1 := Max(View.HeaderWidth,View.XAt(State.EffectFrom));
         X2 := Min(Width,View.XAt(State.EffectTo));
       end
       else
       begin
-        X1 := Max(HEADER_WIDTH,View.XAt(Effect.StartBeat));
+        X1 := Max(View.HeaderWidth,View.XAt(Effect.StartBeat));
         X2 := Min(Width,View.XAt(Effect.EndBeat));
       end;
       if X1>=X2 then Continue;
       Y := View.EffectY(Row,Effect.Lane);
-      R := Rect(X1,Y+2,X2,Y+View.EffectHeight-2);
+      R := Rect(X1,Y+View.Px(2),X2,Y+View.EffectHeight-View.Px(2));
       Canvas.Brush.Color := $00614A57;
       if Effect.Lane=elMotion then Canvas.Brush.Color := $004D6144;
       if Effect.Lane=elPresentation then Canvas.Brush.Color := $004A6573;
@@ -205,7 +244,7 @@ begin
       else
         Text := LipSyncPresentationCaption(Effect.Presentation);
       Canvas.Brush.Style := bsClear;
-      Canvas.TextRect(R,R.Left+4,R.Top+2,Text);
+      Canvas.TextRect(R,R.Left+View.Px(5),R.Top+View.Px(2),Text);
       Canvas.Brush.Style := bsSolid;
     end;
   end;
@@ -213,7 +252,7 @@ begin
   begin
     Y := View.EffectY(State.EffectRow,State.EffectLane);
     Canvas.Brush.Color := $007B5B3B;
-    Canvas.FillRect(Rect(View.XAt(State.EffectFrom),Y+2,View.XAt(State.EffectTo),Y+View.EffectHeight-2));
+    Canvas.FillRect(Rect(View.XAt(State.EffectFrom),Y+View.Px(2),View.XAt(State.EffectTo),Y+View.EffectHeight-View.Px(2)));
   end;
 end;
 
@@ -221,7 +260,7 @@ procedure PaintLipSyncTimeline(C: TCanvas; W,H: Integer; AFont: TFont;
   Project: TLipSyncProject; const View: TLipSyncTimelineView;
   const State: TLipSyncTimelinePaintState);
 var
-  Row, Y, X, A, B, I, J, LowY, HighY, Save, Measure: Integer;
+  Row, Y, X, A, B, I, J, LowY, HighY, Save, Measure, LineHeight: Integer;
   Lane: TLipSyncEffectLane;
   Beat, Start, Duration, MinValue, MaxValue, Grid, Pulse, WithinBeat: Double;
   R, Thumb, Body: TRect;
@@ -232,12 +271,13 @@ var
   Text: string;
 begin
   C.Font.Assign(AFont);
+  LineHeight := C.TextHeight('国');
   C.Font.Color := $00E6E6E6;
   C.Brush.Color := $00232323;
   C.FillRect(Rect(0, 0, W, H));
   C.Brush.Color := $00383838;
-  C.FillRect(Rect(0, 0, W, RULER_HEIGHT));
-  C.TextOut(8, 6, 'トラック / 小節・拍');
+  C.FillRect(Rect(0,0,W,View.RulerHeight));
+  C.TextOut(View.Px(8),View.Px(2), 'トラック / 小節・拍');
 
   Row := 0;
   while Row <= Project.Characters.Count do
@@ -246,7 +286,8 @@ begin
     if Y >= H then Break;
     C.Brush.Color := $002D2D2D;
     if (Row > 0) and (Row - 1 = State.Selected) then C.Brush.Color := $00544535;
-    C.FillRect(Rect(0, Y, HEADER_WIDTH, Y + View.RowHeight - 1));
+    C.FillRect(Rect(0,Y,View.HeaderWidth,Y+View.RowHeight-1));
+    C.Brush.Style := bsClear;
     if Row = 0 then
     begin
       Text := '1  基準音源 (WAV / MP3)';
@@ -255,33 +296,36 @@ begin
         C.Font.Color := $009C9CFF;
         Text := '欠損: 基準音源 (WAV / MP3)';
       end;
-      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+8,Text);
-      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+26,ExtractFileName(Project.AudioPath));
+      C.TextRect(Rect(0,Y,View.HeaderWidth,Y+View.RowHeight),View.Px(8),Y+View.Px(8),Text);
+      C.TextRect(Rect(0,Y,View.HeaderWidth,Y+View.RowHeight),View.Px(8),Y+View.Px(10)+LineHeight,ExtractFileName(Project.AudioPath));
       C.Font.Color := $00E6E6E6;
     end
     else
     begin
       Character := Project.Characters[Row - 1];
-      Text := IntToStr(Row+1)+'  '+ExtractFileName(Character.PSDPath);
+      Text := IntToStr(Row+1);
       if Character.PsdMissing then
       begin
         C.Font.Color := $009C9CFF;
-        Text := '欠損: '+Text;
-        C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+31,'PSD をドロップして差し替え');
+        C.TextRect(Rect(View.Px(32),Y,View.HeaderWidth,Y+View.RowHeight),View.Px(34),Y+View.Px(8),'PSD 欠損');
+        C.TextRect(Rect(0,Y,View.HeaderWidth,Y+View.RowHeight),View.Px(8),Y+View.Px(12)+LineHeight,'PSD をドロップして差し替え');
       end
       else
       begin
         Character.EnsureThumbnail;
         if not Character.Thumbnail.Empty then
         begin
-          Thumb := MusicStudioFitFrameRect(Rect(8,Y+29,65,Y+View.RowHeight-3),
+          Thumb := MusicStudioFitFrameRect(Rect(View.Px(36),Y+View.Px(4),View.HeaderWidth-View.Px(8),Y+View.RowHeight-View.Px(4)),
             Character.Thumbnail.Width,Character.Thumbnail.Height);
           C.StretchDraw(Thumb,Character.Thumbnail);
-        end;
+        end
+        else
+          C.TextRect(Rect(View.Px(32),Y,View.HeaderWidth,Y+View.RowHeight),View.Px(34),Y+View.Px(8),'PSD プレビューなし');
       end;
-      C.TextRect(Rect(0,Y,HEADER_WIDTH,Y+View.RowHeight),8,Y+8,Text);
+      C.TextRect(Rect(0,Y,View.HeaderWidth,Y+View.RowHeight),View.Px(8),Y+View.Px(8),Text);
       C.Font.Color := $00E6E6E6;
     end;
+    C.Brush.Style := bsSolid;
     C.Pen.Color := $00404040;
     C.MoveTo(0, Y + View.RowHeight - 1);
     C.LineTo(W, Y + View.RowHeight - 1);
@@ -292,13 +336,13 @@ begin
       begin
         Y := View.EffectY(Row,Lane);
         C.Brush.Color := $00282828;
-        C.FillRect(Rect(0,Y,HEADER_WIDTH,Y+View.EffectHeight-1));
+        C.FillRect(Rect(0,Y,View.HeaderWidth,Y+View.EffectHeight-1));
         case Lane of
           elExpression: Text := '表情';
           elMotion: Text := 'アニメーション';
           elPresentation: Text := '演出';
         end;
-        C.TextOut(24,Y+3,Text);
+        C.TextOut(View.Px(24),Y+View.Px(4),Text);
         C.Pen.Color := $003C3C3C;
         C.MoveTo(0,Y+View.EffectHeight-1);
         C.LineTo(W,Y+View.EffectHeight-1);
@@ -309,16 +353,16 @@ begin
 
   Save := SaveDC(C.Handle);
   try
-    IntersectClipRect(C.Handle, HEADER_WIDTH, 0, W, H);
+    IntersectClipRect(C.Handle,View.HeaderWidth,0,W,H);
     C.Brush.Style := bsClear;
-    Measure := Project.Timing.MeasureAtBeat(View.BeatAt(HEADER_WIDTH));
+    Measure := Project.Timing.MeasureAtBeat(View.BeatAt(View.HeaderWidth));
     Beat := Project.Timing.MeasureStart(Measure);
     while View.XAt(Beat) < W do
     begin
       X := View.XAt(Beat);
       C.Pen.Color := $005A5A5A;
       C.MoveTo(X, 0); C.LineTo(X, H);
-      C.TextOut(X+4,0,IntToStr(Measure));
+      C.TextOut(X+View.Px(4),View.Px(1),IntToStr(Measure));
       Grid := View.GridStep(Project.Timing,Beat);
       Pulse := 4/Project.Timing.DenominatorAtBeat(Beat);
       Start := Beat+Grid;
@@ -330,11 +374,11 @@ begin
         if Abs(WithinBeat-Round(WithinBeat))<1E-8 then
         begin
           C.Pen.Color := $00484848;
-          if View.PixelsPerBeat*Pulse>=12 then C.TextOut(X+3,0,'·');
+          if View.PixelsPerBeat*Pulse>=View.Px(14) then C.TextOut(X+View.Px(3),View.Px(1),'·');
         end
         else
           C.Pen.Color := $00323232;
-        C.MoveTo(X,RULER_HEIGHT);
+        C.MoveTo(X,View.RulerHeight);
         C.LineTo(X,H);
         Start := Start+Grid;
       end;
@@ -345,19 +389,19 @@ begin
     PaintTempoMarkers(C,W,H,Project.Timing,View,State.SelectedTempo);
     if Project.AudioMissing then
     begin
-      R := Rect(HEADER_WIDTH+1,RULER_HEIGHT+1,W,RULER_HEIGHT+View.RowHeight-1);
+      R := Rect(View.HeaderWidth+1,View.RulerHeight+1,W,View.RulerHeight+View.RowHeight-1);
       C.Brush.Color := $00393770;
       C.Brush.Style := bsSolid;
       C.FillRect(R);
       C.Brush.Style := bsClear;
-      C.TextRect(R,R.Left+8,R.Top+7,'WAV / MP3 をドロップして差し替え');
+      C.TextRect(R,R.Left+View.Px(8),R.Top+View.Px(7),'WAV / MP3 をドロップして差し替え');
     end;
     Audio := Project.Audio;
     if Assigned(Audio) and Audio.Done and (Length(Audio.Waveform) > 0) then
     begin
       Duration := Audio.Info.Duration;
       C.Pen.Color := $00C9A86E;
-      for X := HEADER_WIDTH to Min(W - 1, View.XAt(Project.Timing.SecondsToBeat(Duration))) do
+      for X := View.HeaderWidth to Min(W - 1, View.XAt(Project.Timing.SecondsToBeat(Duration))) do
       begin
         A := EnsureRange(Floor(Project.Timing.BeatToSeconds(View.BeatAt(X)) * Length(Audio.Waveform) / Duration),0,High(Audio.Waveform));
         B := EnsureRange(Ceil(Project.Timing.BeatToSeconds(View.BeatAt(X+1)) * Length(Audio.Waveform) / Duration),A,High(Audio.Waveform));
@@ -367,8 +411,8 @@ begin
           MinValue := Min(MinValue, Audio.Waveform[I].Minimum);
           MaxValue := Max(MaxValue, Audio.Waveform[I].Maximum);
         end;
-        LowY := RULER_HEIGHT + View.RowHeight div 2 - Round(MaxValue * (View.RowHeight / 2 - 5));
-        HighY := RULER_HEIGHT + View.RowHeight div 2 - Round(MinValue * (View.RowHeight / 2 - 5));
+        LowY := View.RulerHeight + View.RowHeight div 2 - Round(MaxValue * (View.RowHeight / 2 - View.Px(5)));
+        HighY := View.RulerHeight + View.RowHeight div 2 - Round(MinValue * (View.RowHeight / 2 - View.Px(5)));
         C.MoveTo(X, LowY); C.LineTo(X, HighY + 1);
       end;
     end;
@@ -382,8 +426,8 @@ begin
         if State.ClipDragging and (State.DragRow > 0) and (Clip = State.Clip) then Continue;
         A := View.XAt(Clip.Beat);
         B := View.ClipRight(Project,Clip);
-        if (B <= HEADER_WIDTH) or (A >= W) then Continue;
-        R := Rect(Max(A,HEADER_WIDTH),Y+3,Min(B,W),Y+View.RowHeight-3);
+        if (B<=View.HeaderWidth) or (A>=W) then Continue;
+        R := Rect(Max(A,View.HeaderWidth),Y+View.Px(3),Min(B,W),Y+View.RowHeight-View.Px(3));
         C.Brush.Color := $00574733;
         if Clip = State.Clip then C.Brush.Color := $00806036;
         Text := ExtractFileName(Clip.Path);
@@ -396,10 +440,10 @@ begin
         else if Clip.Track<0 then Text := Text+'（歌詞なし）';
         C.FillRect(R);
         C.Brush.Style := bsClear;
-        C.TextRect(R, Max(A+4,HEADER_WIDTH+2),Y+6,Text);
+        C.TextRect(R, Max(A+View.Px(4),View.HeaderWidth+View.Px(2)),Y+View.Px(6),Text);
         if Clip.Missing then
         begin
-          C.TextRect(R,R.Left+4,Y+26,'ドロップして差し替え');
+          C.TextRect(R,R.Left+View.Px(4),Y+View.Px(9)+LineHeight,'ドロップして差し替え');
           C.Brush.Style := bsSolid;
           Continue;
         end;
@@ -409,12 +453,13 @@ begin
           begin
             I := View.XAt(Project.Timing.SecondsToBeat(Start + Note.StartSeconds));
             J := View.XAt(Project.Timing.SecondsToBeat(Start + Note.EndSeconds));
-            Body := Rect(Max(I,R.Left),Y+25,Min(Max(I+1,J),R.Right),Y+View.RowHeight-5);
+            Body := Rect(Max(I,R.Left),Y+View.Px(8)+LineHeight,
+              Min(Max(I+1,J),R.Right),Y+View.RowHeight-View.Px(5));
             if Body.IsEmpty then Continue;
             C.Pen.Color := $00A08361;
             C.MoveTo(Body.Left, Body.Top); C.LineTo(Body.Right, Body.Top);
-            C.TextRect(Body, Body.Left+2, Body.Top+2, Note.Lyric);
-            C.TextRect(Body, Body.Left+2, Body.Top+19, LipSyncVowelCaption(Note.Vowels));
+            C.TextRect(Body,Body.Left+View.Px(2),Body.Top+View.Px(2),Note.Lyric);
+            C.TextRect(Body,Body.Left+View.Px(2),Body.Top+View.Px(3)+LineHeight,LipSyncVowelCaption(Note.Vowels));
           end;
         C.Brush.Style := bsSolid;
       end;
@@ -425,7 +470,7 @@ begin
       X := View.XAt(State.DragBeat);
       B := View.XAt(Project.Timing.SecondsToBeat(Project.Timing.BeatToSeconds(State.DragBeat) + State.Clip.DurationSeconds));
       C.Brush.Color := $007B5B3B;
-      C.FillRect(Rect(X, Y+3, Max(X+8,B), Y+View.RowHeight-3));
+      C.FillRect(Rect(X,Y+View.Px(3),Max(X+View.Px(8),B),Y+View.RowHeight-View.Px(3)));
     end;
     PaintEffects(C,W,H,Project,View,State);
     X := View.XAt(Project.Timing.SecondsToBeat(State.CursorSeconds));

@@ -4,7 +4,7 @@
 
 interface
 
-uses System.Classes, Vcl.ExtCtrls, Vcl.StdCtrls;
+uses System.Classes, Vcl.ExtCtrls, Vcl.StdCtrls, SYNC_LipSync_TimelineView;
 
 type
   TLipSyncTempoCommit = procedure(Beat,BPM: Double) of object;
@@ -23,7 +23,7 @@ type
     // TimelineとStatusはフォーム所有。入力欄だけを所有する。
     constructor Create(Timeline: TPaintBox; Status: TLabel; Commit: TLipSyncTempoCommit);
     destructor Destroy; override;
-    procedure Open(X: Integer; Beat,BPM: Double);
+    procedure Open(X: Integer; Beat,BPM: Double; const View: TLipSyncTimelineView);
     function Finish: Boolean;
     procedure Cancel;
   end;
@@ -31,7 +31,7 @@ type
 implementation
 
 uses Winapi.Windows, System.SysUtils, System.Math,
-  SYNC_LipSync_TimelineView, SYNC_MusicStudio_DarkTheme;
+  SYNC_MusicStudio_DarkTheme;
 
 constructor TLipSyncTempoEditor.Create(Timeline: TPaintBox; Status: TLabel;
   Commit: TLipSyncTempoCommit);
@@ -55,12 +55,15 @@ begin
   inherited;
 end;
 
-procedure TLipSyncTempoEditor.Open(X: Integer; Beat,BPM: Double);
+procedure TLipSyncTempoEditor.Open(X: Integer; Beat,BPM: Double; const View: TLipSyncTimelineView);
+var
+  EditWidth: Integer;
 begin
   if not Finish then Exit;
   FBeat := Beat;
-  FEdit.SetBounds(FTimeline.Left+EnsureRange(X,HEADER_WIDTH,Max(HEADER_WIDTH,FTimeline.Width-82)),
-    FTimeline.Top+TEMPO_TOP-4,80,24);
+  EditWidth := View.Px(104);
+  FEdit.SetBounds(FTimeline.Left+EnsureRange(X,View.HeaderWidth,Max(View.HeaderWidth,FTimeline.Width-EditWidth)),
+    FTimeline.Top+View.TempoTop-View.Px(3),EditWidth,View.Px(29));
   FEdit.Text := FloatToStr(BPM);
   FEditing := True;
   FEdit.Visible := True;

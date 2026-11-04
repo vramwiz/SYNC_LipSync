@@ -29,10 +29,10 @@ type
     destructor Destroy; override;
     // 素材は読取専用。設定変更時だけ解析を開始し、音声解析はワーカーが所有する。
     procedure Configure(const PsdPath, MusicPath, JSON: string);
-    // 呼出側のBitmapへ描画する。Slot=-1は時刻同期、0..9は指定した口差分。
+    // 呼出側のBitmapへ描画する。Slot=-1は時刻同期、0..10は指定した口差分。
     // PreviewLayerとExpressionは試写レイヤー・表示差分を借用し、基本設定には反映しない。
     function Render(Bitmap: TBitmap; Seconds: Double; Slot: Integer = -1;
-      const PreviewLayer: string = ''; FixedSizeStep: Integer = 3;
+      const PreviewLayer: string = ''; FixedSizeStep: Integer = 4;
       Expression: TJSONObject = nil; BlinkSeconds: Double = -1): Boolean;
     // 口差分と独立した決定的な瞬き。設定されていない差分は描画へ影響しない。
     function EyeAt(Seconds: Double): TLipSyncEye;
@@ -45,6 +45,8 @@ type
     function Placement(const Frame: TRect; OutputWidth, OutputHeight: Integer;
       const Transform: TMusicStudioPsdTransform): TRect; overload;
     function MusicStatus: string;
+    // 解析済みの試写素材の秒数。未設定・解析中は 0 を返す。
+    function MusicDuration: Double;
     // 映像出力時に音声解析の完了を待つ。編集画面は解析中でも試写できる。
     procedure WaitForMusic;
     property Document: TMusicStudioLayerDocument read FDocument;
@@ -52,8 +54,11 @@ type
 
 const
   LIP_SYNC_EYE_NAMES: array[TLipSyncEye] of string = ('開眼','半目','閉眼');
-  LIP_SYNC_SLOT_NAMES: array[0..9] of string =
-    ('通常 / 閉じ口', 'あ', 'い', 'う', 'え', 'お', 'ん', '小開き', '中開き', '全開');
+  LIP_SYNC_SLOT_NAMES: array[0..10] of string =
+    ('閉じ', 'あ', 'い', 'う', 'え', 'お', 'ん', 'やや閉じ', '半開き', '開き', 'やや開き');
+  // 閉じから開きへの順序。既存の割当キーと番号は保持する。
+  LIP_SYNC_OPENING_SLOTS: array[0..4] of Integer = (0,7,8,10,9);
+  LIP_SYNC_SAMPLE_SECONDS = 3.2;
   LIP_SYNC_MUSIC_MASK = '*.wav;*.mp3;*.mid;*.midi;*.kar;*.ust;*.vsqx;*.musicxml;*.mxl;*.xml;*.mscx;*.mscz';
   LIP_SYNC_MUSIC_CAPTION = '音楽 (WAV / MP3 / MIDI / 歌唱データ)';
   LIP_SYNC_PSD_MASK = '*.psd';
@@ -68,6 +73,8 @@ procedure AssignLipSyncEye(Config: TJSONObject; Eye: TLipSyncEye; const Key: str
 // 固定試写サンプルの音素と開閉段階を返す。実際の素材の時刻には影響しない。
 procedure LipSyncSampleMouth(Seconds, Speed: Double; out SongSlot, Opening: Integer);
 
+// 音量がしきい値を超えたときの口差分番号と開閉段階を求める。
+procedure LipSyncVolumeMouth(Peak, Threshold: Double; out Slot, SizeStep: Integer);
 function LipSyncSingingTrack(const Source: TMusicStudioSingingSource): Integer;
 // 歌唱素材内の秒位置を、口差分の番号と縮小段階に変換する。
 procedure LipSyncSingingMouth(const Notes: TMusicStudioSingingNotes; Track: Integer;
@@ -82,8 +89,8 @@ uses
 
 const
   EYE_KEYS: array[TLipSyncEye] of string = ('eyeOpen','eyeHalf','eyeClosed');
-  SIMPLE_KEYS: array[7..9] of string = ('openSmall', 'openMedium', 'openFull');
-  MOUTH_SCALES: array[1..3] of Double = (0.55, 0.78, 1.0);
+  SIMPLE_KEYS: array[7..10] of string = ('openSmall', 'openMedium', 'openFull', 'openWide');
+  MOUTH_SCALES: array[1..4] of Double = (0.55, 0.78, 0.90, 1.0);
 
 function LipSyncMode(const Path: string): TLipSyncMode;
 var
@@ -173,7 +180,7 @@ var
   Index: Integer;
 begin
   Slot := 0;
-  SizeStep := 3;
+  SizeStep := High(LIP_SYNC_OPENING_SLOTS);
   if Track < 0 then Exit;
   Latest := -1;
   for Note in Notes do
@@ -186,7 +193,7 @@ begin
       Index := EnsureRange(1 + Floor(Fraction * Length(Note.Vowels)), 1, Length(Note.Vowels));
       Slot := Pos(Note.Vowels[Index], 'aiueon');
       Fraction := Frac(Fraction * Length(Note.Vowels));
-      SizeStep := EnsureRange(Ceil(3 * Sin(Pi * Fraction)), 1, 3);
+      SizeStep := EnsureRange(Ceil(High(LIP_SYNC_OPENING_SLOTS)*Sin(Pi*Fraction)),1,High(LIP_SYNC_OPENING_SLOTS));
     end;
 end;
 
@@ -260,13 +267,32 @@ begin
   end;
 end;
 
+function TLipSyncScene.MusicDuration: Double;
+begin
+  Result := 0;
+  case FMode of
+    lmEnvelope:
+      if Assigned(FVoice) and FVoice.Done then Result := FVoice.Info.Duration;
+    lmPhonemes: Result := FSinging.Duration;
+  end;
+end;
+
+procedure LipSyncVolumeMouth(Peak, Threshold: Double; out Slot, SizeStep: Integer);
+begin
+  SizeStep := 0;
+  if Peak>Threshold then
+    SizeStep := EnsureRange(Ceil(High(LIP_SYNC_OPENING_SLOTS)*(Peak-Threshold)/(1-Threshold)),
+      1,High(LIP_SYNC_OPENING_SLOTS));
+  Slot := LIP_SYNC_OPENING_SLOTS[SizeStep];
+end;
+
 procedure TLipSyncScene.MouthAt(Seconds: Double; out Slot, SizeStep: Integer);
 var
   Index, Count: Integer;
   Peak, Threshold: Double;
 begin
   Slot := 0;
-  SizeStep := 3;
+  SizeStep := High(LIP_SYNC_OPENING_SLOTS);
   if Seconds < 0 then Exit;
   case FMode of
     lmEnvelope:
@@ -277,9 +303,7 @@ begin
         Index := Min(Count - 1, Floor(Seconds * Count / FVoice.Info.Duration));
         Peak := Max(Abs(FVoice.Waveform[Index].Minimum), Abs(FVoice.Waveform[Index].Maximum));
         Threshold := LipSyncNumber(FConfig, 'threshold', 8, 0, 99) / 100;
-        if Peak <= Threshold then Exit;
-        SizeStep := EnsureRange(Ceil(3 * (Peak - Threshold) / (1 - Threshold)), 1, 3);
-        Slot := 6 + SizeStep;
+        LipSyncVolumeMouth(Peak,Threshold,Slot,SizeStep);
       end;
     lmPhonemes:
       LipSyncSingingMouth(FSinging.Notes, FTrack, Seconds, Slot, SizeStep);
@@ -335,11 +359,11 @@ const
 var
   Position: Double;
 begin
-  Position := Frac(Max(0.0,Seconds)*Speed/3.2)*Length(PHRASE);
+  Position := Frac(Max(0.0,Seconds)*Speed/LIP_SYNC_SAMPLE_SECONDS)*Length(PHRASE);
   SongSlot := PHRASE[Min(High(PHRASE),Floor(Position))];
   Opening := 0;
   if SongSlot<>0 then
-    Opening := EnsureRange(Ceil(3*Sin(Pi*Frac(Position))),1,3);
+    Opening := EnsureRange(Ceil(High(LIP_SYNC_OPENING_SLOTS)*Sin(Pi*Frac(Position))),1,High(LIP_SYNC_OPENING_SLOTS));
 end;
 
 function TLipSyncScene.EyeAt(Seconds: Double): TLipSyncEye;
@@ -415,7 +439,9 @@ begin
     else
     begin
       Key := LipSyncLayer(Config, Slot);
-      if not FDocument.HasLayer(Key) then Key := LipSyncLayer(Config, 9);
+      if (Slot=LIP_SYNC_OPENING_SLOTS[3]) and not FDocument.HasLayer(Key) then
+        Key := LipSyncLayer(Config,LIP_SYNC_OPENING_SLOTS[2]);
+      if not FDocument.HasLayer(Key) then Key := LipSyncLayer(Config,LIP_SYNC_OPENING_SLOTS[4]);
       if not FDocument.HasLayer(Key) then Key := MusicStudioSelectedMouth(FDocument, Config, 1);
     end;
     if not FDocument.HasLayer(Key) then
@@ -453,7 +479,7 @@ begin
       end;
       PartScale := 1;
       if (PreviewLayer = '') and (Slot > 0) and MusicStudioAnimateMouthSize(Config) then
-        PartScale := MOUTH_SCALES[SizeStep];
+        PartScale := MOUTH_SCALES[EnsureRange(SizeStep,Low(MOUTH_SCALES),High(MOUTH_SCALES))];
       Result := FDocument.Render(Bitmap, Overrides, 0, Key, PartScale);
       if Result then
       begin
